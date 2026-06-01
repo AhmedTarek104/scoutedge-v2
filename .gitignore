@@ -1,0 +1,9 @@
+data/raw/
+data/processed/
+__pycache__/
+*.pyc
+.env
+*.pkl
+*.egg-info/
+.venv/
+_gen_app.py
