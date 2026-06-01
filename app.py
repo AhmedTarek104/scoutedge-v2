@@ -1,1159 +1,2075 @@
 import sys, pickle
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
 
 import dash
-from dash import dcc, html, dash_table, Input, Output, State, no_update
+from dash import dcc, html, dash_table, Input, Output, State, callback_context, no_update
 import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 from config import (DATA_FINAL, DATA_PROC, ROOT, TARGET_LEAGUES, SCOUTING_WEIGHTS,
-                    EXCLUDED_NATIONALITIES,
-                    COLOR_PRIMARY, COLOR_SUCCESS, COLOR_WARNING, COLOR_DARK,
-                    COLOR_CARD, COLOR_TEXT, COLOR_MUTED, COLOR_BORDER)
+                    EXCLUDED_NATIONALITIES)
 from similarity import build_similarity_matrices, get_similar_players
-from squad_analysis import load_squad
 
-# ── Startup ───────────────────────────────────────────────────────────────────
+# ── Data Loading ──────────────────────────────────────────────────────────────
+
 print("Loading players_final.csv...")
 DF = pd.read_csv(DATA_FINAL / "players_final.csv", low_memory=False)
-DF["market_value_m"] = pd.to_numeric(DF["market_value_m"], errors="coerce")
-DF["age"] = pd.to_numeric(DF["age"], errors="coerce")
-DF["minutes"] = pd.to_numeric(DF["minutes"], errors="coerce")
-DF["contract_expiring"] = DF["contract_expiring"].astype(str).str.lower().isin(["true", "1", "yes"])
-print(f"Loaded {len(DF)} players")
+DF["market_value_m"]       = pd.to_numeric(DF["market_value_m"],       errors="coerce")
+DF["age"]                  = pd.to_numeric(DF["age"],                  errors="coerce")
+DF["minutes"]              = pd.to_numeric(DF["minutes"],              errors="coerce")
+DF["adjusted_scouting_score"] = pd.to_numeric(DF["adjusted_scouting_score"], errors="coerce")
+DF["raw_scouting_score"]   = pd.to_numeric(DF["raw_scouting_score"],   errors="coerce")
+DF["contract_expiring"]    = DF["contract_expiring"].astype(str).str.lower().isin(["true","1","yes"])
+print(f"  {len(DF)} players loaded")
 
-SQUAD = load_squad()
-SQUAD["is_foreign"] = SQUAD["is_foreign"].astype(str).str.lower().isin(["true", "1", "yes"])
+SQUAD_CSV = ROOT / "data" / "al_ahly_squad.csv"
+SQUAD = pd.read_csv(SQUAD_CSV)
+SQUAD["market_value_m"] = pd.to_numeric(SQUAD["market_value_m"], errors="coerce")
+SQUAD["age"]            = pd.to_numeric(SQUAD["age"],            errors="coerce")
+SQUAD["is_foreign"]     = SQUAD["is_foreign"].astype(str).str.lower().isin(["true","1","yes"])
 _TODAY = datetime.now()
-SQUAD["contract_expiring"] = pd.to_datetime(SQUAD["contract_expiry"], errors="coerce").apply(
-    lambda d: (d - _TODAY).days <= 365 if pd.notna(d) else False
+SQUAD["contract_expiry_dt"] = pd.to_datetime(SQUAD["contract_expiry"], errors="coerce")
+SQUAD["contract_expiring"]  = SQUAD["contract_expiry_dt"].apply(
+    lambda d: pd.notna(d) and (d - _TODAY).days <= 365
 )
+print(f"  {len(SQUAD)} squad players loaded")
 
 pkl_path = DATA_PROC / "similarity_matrices.pkl"
 if pkl_path.exists():
-    with open(pkl_path, "rb") as f:
-        MATRICES = pickle.load(f)
-    print("Loaded cached similarity matrices")
+    with open(pkl_path, "rb") as fh:
+        MATRICES = pickle.load(fh)
+    print("  Cached similarity matrices loaded")
 else:
+    print("  Building similarity matrices...")
     MATRICES = build_similarity_matrices(DF)
-    with open(pkl_path, "wb") as f:
-        pickle.dump(MATRICES, f)
+    with open(pkl_path, "wb") as fh:
+        pickle.dump(MATRICES, fh)
+    print("  Matrices saved")
 
 LEAGUES_IN_DATA = sorted(DF["league_clean"].dropna().unique().tolist())
-POS_OPTIONS = [{"label": p, "value": p} for p in ["CB", "FB", "DM", "CM", "AM", "W", "ST"]]
-SORT_OPTIONS = [
-    {"label": "Adjusted Score", "value": "adjusted_scouting_score"},
-    {"label": "Raw Score",      "value": "raw_scouting_score"},
-    {"label": "Market Value",   "value": "market_value_m"},
-    {"label": "Age",            "value": "age"},
-    {"label": "Value Gap %",    "value": "value_gap_pct"},
-]
 
-CARD_STYLE = {
-    "background": COLOR_CARD,
-    "border": f"1px solid {COLOR_BORDER}",
-    "borderRadius": "8px",
-    "padding": "16px",
-    "marginBottom": "16px",
+# ── Design System ─────────────────────────────────────────────────────────────
+
+BG_DARK    = "#0D0D0D"
+BG_CARD    = "#1A1A1A"
+BG_CARD2   = "#222222"
+BORDER     = "#2A2A2A"
+RED        = "#CC0000"
+GREEN      = "#00C853"
+AMBER      = "#FFB300"
+TEXT       = "#F5F5F5"
+TEXT_MUTED = "#888888"
+BLUE       = "#1565C0"
+
+CHART_DEFAULTS = dict(
+    template="plotly_dark",
+    paper_bgcolor=BG_CARD,
+    plot_bgcolor=BG_CARD,
+    font=dict(color=TEXT, family="Inter, system-ui"),
+    margin=dict(l=40, r=20, t=50, b=40),
+)
+
+CARD = {
+    "background": BG_CARD,
+    "border":        f"1px solid {BORDER}",
+    "borderRadius":  "10px",
+    "padding":       "16px",
 }
-HDR = {"color": COLOR_TEXT, "fontWeight": "700"}
+
+H = {"color": TEXT, "fontWeight": "600", "fontFamily": "Inter, system-ui"}
+
+FONT = "Inter, system-ui, sans-serif"
+
+TBL_HEADER = {
+    "background": BG_CARD2, "color": TEXT,
+    "fontWeight": "700", "border": f"1px solid {BORDER}",
+    "fontFamily": FONT, "fontSize": "12px",
+}
+TBL_CELL = {
+    "background": BG_CARD, "color": TEXT,
+    "border": f"1px solid {BORDER}",
+    "fontFamily": FONT, "fontSize": "12px", "padding": "8px 10px",
+}
+
+# ── Tactical Profiles ─────────────────────────────────────────────────────────
+# Each entry: (display_name, [(column, operator, pct_threshold)])
+# Percentile thresholds are within the position group.
+# Missing columns are silently skipped.
+
+TACTICAL_PROFILES = {
+    "W": [
+        ("High Presser",    [("pressures_p90",          ">=", 70)]),  # col missing → skipped
+        ("Direct Dribbler", [("dribbles_completed_p90", ">=", 65)]),
+        ("Creator",         [("key_passes_p90",          ">=", 65)]),
+        ("Goal Threat",     [("xg_p90",                  ">=", 65)]),
+    ],
+    "ST": [
+        ("Poacher",      [("npxg_p90",                ">=", 70),
+                          ("progressive_carries_p90", "<",  50)]),
+        ("Target Man",   [("aerial_duels_won_pct",    ">=", 60)]),
+        ("Pressing ST",  [("pressures_p90",            ">=", 65)]),   # col missing → skipped
+        ("Link-Up",      [("assists_p90",              ">=", 60),
+                          ("progressive_receives_p90",">=", 60)]),
+    ],
+    "CM": [
+        ("Ball Winner",    [("tackles_p90",            ">=", 65),
+                            ("interceptions_p90",      ">=", 65)]),
+        ("Deep Playmaker", [("pass_completion_rate",   ">=", 70),
+                            ("progressive_passes_p90", ">=", 65)]),
+        ("Box-to-Box",     [("tackles_p90",            ">=", 55),
+                            ("goals_p90",              ">=", 55)]),
+        ("Progressive",    [("progressive_passes_p90", ">=", 70)]),
+    ],
+    "CB": [
+        ("Ball-Playing",      [("progressive_passes_p90", ">=", 65),
+                               ("pass_completion_rate",   ">=", 65)]),
+        ("Defensive Stopper", [("tackles_p90",            ">=", 65),
+                               ("interceptions_p90",      ">=", 65)]),
+        ("Aerial Dominator",  [("aerial_duels_won_pct",   ">=", 70)]),
+    ],
+    "DM": [
+        ("Ball Winner",        [("tackles_p90",            ">=", 65),
+                                ("interceptions_p90",      ">=", 65)]),
+        ("Screener",           [("blocks_p90",             ">=", 65),
+                                ("clearances_p90",         ">=", 55)]),
+        ("Progressive Passer", [("progressive_passes_p90", ">=", 70)]),
+    ],
+    "FB": [
+        ("Attacking FB",  [("progressive_carries_p90", ">=", 65),
+                           ("crosses_p90",              ">=", 65)]),
+        ("Defensive FB",  [("tackles_p90",              ">=", 65),
+                           ("interceptions_p90",        ">=", 65)]),
+        ("Complete FB",   [("progressive_carries_p90",  ">=", 55),
+                           ("tackles_p90",              ">=", 55)]),
+    ],
+    "AM": [
+        ("Classic 10",        [("key_passes_p90",          ">=", 65),
+                               ("xag_p90",                 ">=", 65)]),
+        ("Half-Space Runner", [("progressive_carries_p90", ">=", 65),
+                               ("goals_p90",               ">=", 55)]),
+        ("Direct Creator",    [("assists_p90",             ">=", 65),
+                               ("dribbles_completed_p90",  ">=", 55)]),
+    ],
+}
 
 RADAR_METRICS = {
-    "CB": [("Tackling",    "tackle_success_rate"),
+    "CB": [("Tackling",     "tackle_success_rate"),
            ("Interceptions","interceptions_p90"),
-           ("Prog Pass",   "progressive_passes_p90"),
-           ("Clearances",  "clearances_p90"),
-           ("Aerial",      "aerial_duels_won_pct")],
-    "FB": [("Prog Carries","progressive_carries_p90"),
-           ("Key Passes",  "key_passes_p90"),
-           ("Crosses",     "crosses_p90"),
-           ("Tackling",    "tackles_p90"),
-           ("Assists",     "assists_p90")],
-    "DM": [("Tackling",   "tackles_p90"),
+           ("Prog Pass",    "progressive_passes_p90"),
+           ("Clearances",   "clearances_p90"),
+           ("Aerial",       "aerial_duels_won_pct")],
+    "FB": [("Prog Carries", "progressive_carries_p90"),
+           ("Key Passes",   "key_passes_p90"),
+           ("Crosses",      "crosses_p90"),
+           ("Tackling",     "tackles_p90"),
+           ("Assists",      "assists_p90")],
+    "DM": [("Tackling",     "tackles_p90"),
            ("Interceptions","interceptions_p90"),
-           ("Prog Passes", "progressive_passes_p90"),
-           ("Pass Acc",    "pass_completion_rate"),
-           ("Key Passes",  "key_passes_p90")],
-    "CM": [("Prog Passes", "progressive_passes_p90"),
-           ("Key Passes",  "key_passes_p90"),
-           ("Assists",     "assists_p90"),
-           ("Tackling",    "tackles_p90"),
-           ("Goals",       "goals_p90")],
-    "AM": [("xAG",         "xag_p90"),
-           ("Key Passes",  "key_passes_p90"),
-           ("Assists",     "assists_p90"),
-           ("Prog Carries","progressive_carries_p90"),
-           ("Goals",       "goals_p90")],
-    "W":  [("Prog Carries","progressive_carries_p90"),
-           ("Goals",       "goals_p90"),
-           ("xG",          "xg_p90"),
-           ("Dribbles",    "dribbles_completed_p90"),
-           ("Assists",     "assists_p90")],
-    "ST": [("npxG",        "npxg_p90"),
-           ("Goals",       "goals_p90"),
-           ("Shot Acc",    "shot_accuracy"),
-           ("Prog Rcvs",   "progressive_receives_p90"),
-           ("Assists",     "assists_p90")],
+           ("Prog Passes",  "progressive_passes_p90"),
+           ("Pass Acc",     "pass_completion_rate"),
+           ("Key Passes",   "key_passes_p90")],
+    "CM": [("Prog Passes",  "progressive_passes_p90"),
+           ("Key Passes",   "key_passes_p90"),
+           ("Assists",      "assists_p90"),
+           ("Tackling",     "tackles_p90"),
+           ("Goals",        "goals_p90")],
+    "AM": [("xAG",          "xag_p90"),
+           ("Key Passes",   "key_passes_p90"),
+           ("Assists",      "assists_p90"),
+           ("Prog Carries", "progressive_carries_p90"),
+           ("Goals",        "goals_p90")],
+    "W":  [("Prog Carries", "progressive_carries_p90"),
+           ("Goals",        "goals_p90"),
+           ("xG",           "xg_p90"),
+           ("Dribbles",     "dribbles_completed_p90"),
+           ("Assists",      "assists_p90")],
+    "ST": [("npxG",         "npxg_p90"),
+           ("Goals",        "goals_p90"),
+           ("Shot Acc",     "shot_accuracy"),
+           ("Prog Rcvs",    "progressive_receives_p90"),
+           ("Assists",      "assists_p90")],
+    "GK": [("Save%",        "Save%")],
 }
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-def fmt_mv(v):
-    if v is None or (isinstance(v, float) and np.isnan(v)):
-        return "N/A"
-    return f"€{v:.1f}m"
+# ── Helper Functions ──────────────────────────────────────────────────────────
 
-def age_dot(age):
-    if age is None:
-        return "\U0001f7e1"
-    age = int(age)
-    if age < 28:
-        return "\U0001f7e2"
-    if age <= 30:
-        return "\U0001f7e1"
-    return "\U0001f534"
+def pct_rank(value, series):
+    """Percentile rank of value within series (0-100)."""
+    clean = pd.to_numeric(series, errors="coerce").dropna()
+    if clean.empty or pd.isna(value):
+        return 50
+    return round(float((clean < value).mean() * 100), 1)
 
-def get_pct(pos_df, val, col):
-    if col not in pos_df.columns:
-        return 50.0
-    series = pd.to_numeric(pos_df[col], errors="coerce").dropna()
-    if len(series) == 0 or pd.isna(val):
-        return 50.0
-    return float((series < float(val)).sum() / len(series) * 100)
+def age_color(age):
+    if age >= 30:
+        return RED
+    if age >= 27:
+        return AMBER
+    return GREEN
 
-def kpi_card(title, value, subtitle="", color=COLOR_TEXT):
-    return html.Div([
-        html.P(title, style={"color": COLOR_MUTED, "fontSize": "11px",
-                              "textTransform": "uppercase", "letterSpacing": "1px", "margin": "0 0 4px"}),
-        html.H2(str(value), style={"color": color, "margin": "0", "fontSize": "2rem", "fontWeight": "800"}),
-        html.P(subtitle, style={"color": COLOR_MUTED, "fontSize": "12px", "margin": "4px 0 0"}),
-    ], style={**CARD_STYLE, "textAlign": "center"})
-
-def status_style(status):
+def val_badge_color(status):
     if status == "Undervalued":
-        return {"background": "#00C85322", "color": COLOR_SUCCESS, "padding": "2px 8px",
-                "borderRadius": "12px", "fontSize": "11px", "fontWeight": "600"}
+        return GREEN
     if status == "Overvalued":
-        return {"background": "#CC000022", "color": COLOR_PRIMARY, "padding": "2px 8px",
-                "borderRadius": "12px", "fontSize": "11px", "fontWeight": "600"}
-    return {"background": "#88888822", "color": COLOR_MUTED, "padding": "2px 8px",
-            "borderRadius": "12px", "fontSize": "11px"}
+        return RED
+    return TEXT_MUTED
 
-# ── Tab 1: Squad Intelligence ─────────────────────────────────────────────────
-def _squad_dict():
-    return {r["player"]: r.to_dict() for _, r in SQUAD.iterrows()}
-
-def _pitch_card(label, key, sq):
-    row = sq.get(key, {})
-    age = row.get("age") if row else None
-    foreign = row.get("is_foreign", False)
-    exp = row.get("contract_expiring", False)
-    icons = ("⚡" if exp else "") + ("\U0001f30d" if foreign else "")
+def kpi_card(title, value, subtitle="", color=TEXT):
     return html.Div([
-        html.Div(age_dot(age), style={"fontSize": "10px"}),
-        html.Div(label, style={"color": COLOR_TEXT, "fontSize": "11px", "fontWeight": "700"}),
-        html.Div(f"{age}y {icons}" if age else icons, style={"color": COLOR_MUTED, "fontSize": "10px"}),
-    ], style={"background": "rgba(26,26,26,0.92)", "border": f"1px solid {COLOR_BORDER}",
-              "borderRadius": "6px", "padding": "6px 8px", "textAlign": "center", "minWidth": "72px"})
+        html.Div(title, style={"color": TEXT_MUTED, "fontSize": "11px",
+                               "fontWeight": "600", "textTransform": "uppercase",
+                               "letterSpacing": "0.5px", "marginBottom": "4px",
+                               "fontFamily": FONT}),
+        html.Div(str(value), style={"color": color, "fontSize": "28px",
+                                    "fontWeight": "700", "fontFamily": FONT,
+                                    "lineHeight": "1.1"}),
+        html.Div(subtitle, style={"color": TEXT_MUTED, "fontSize": "11px",
+                                  "marginTop": "2px", "fontFamily": FONT}),
+    ], style={**CARD, "textAlign": "center"})
 
-def build_pitch():
-    sq = _squad_dict()
-    rs = {"display": "flex", "justifyContent": "center", "gap": "10px", "marginBottom": "10px"}
+def badge(text, color=GREEN, bg=None):
+    bg = bg or (color + "22")
+    return html.Span(text, style={
+        "background": bg, "color": color,
+        "border": f"1px solid {color}",
+        "borderRadius": "4px", "padding": "2px 8px",
+        "fontSize": "11px", "fontWeight": "700",
+        "fontFamily": FONT, "whiteSpace": "nowrap",
+    })
+
+def apply_tactical_filter(df_pos, pos, active_profiles):
+    """Filter df_pos by active tactical profile toggles."""
+    if not active_profiles:
+        return df_pos
+    profiles = {name: conds for name, conds in TACTICAL_PROFILES.get(pos, [])}
+    mask = pd.Series([True] * len(df_pos), index=df_pos.index)
+    for profile_name in active_profiles:
+        if profile_name not in profiles:
+            continue
+        for col, op, thresh_pct in profiles[profile_name]:
+            if col not in df_pos.columns:
+                continue
+            series = pd.to_numeric(df_pos[col], errors="coerce")
+            pct_val = float(np.nanpercentile(
+                pd.to_numeric(DF[DF["position_group"] == pos][col], errors="coerce").dropna(),
+                thresh_pct
+            ))
+            if op == ">=":
+                mask &= series >= pct_val
+            elif op == "<":
+                mask &= series < pct_val
+    return df_pos[mask]
+
+# ── Formation Pitch ───────────────────────────────────────────────────────────
+
+FORMATION_XI = [
+    ("ST",  "Mohamed Sherif",      50,  8),
+    ("LW",  "Trezeguet",           12, 18),
+    ("RW",  "Zizo",                88, 18),
+    ("CM",  "Emam Ashour",         32, 38),
+    ("DM",  "Aliou Dieng",         50, 38),
+    ("CM",  "Marwan Ateya",        68, 38),
+    ("LB",  "Youssef Belammari",    8, 62),
+    ("CB",  "Hady Reyad",          30, 62),
+    ("CB",  "Beckham",             70, 62),
+    ("RB",  "Mohamed Hany",        92, 62),
+    ("GK",  "Mohamed El Shenawy", 50, 85),
+]
+
+def player_node(role, name, x_pct, y_pct, age, is_foreign, expiring):
+    dot_color = age_color(age)
+    short = name.split()[-1] if " " in name else name
+    icons = ""
+    if expiring:
+        icons += " ⚡"
+    if is_foreign:
+        icons += " 🌍"
+    initials = "".join(p[0].upper() for p in name.split()[:2]) if " " in name else name[:2].upper()
     return html.Div([
-        html.Div([
-            html.Div("4-3-3 Formation",
-                     style={"color": COLOR_MUTED, "fontSize": "11px", "textAlign": "center",
-                            "marginBottom": "8px", "fontWeight": "600"}),
-            html.Div([_pitch_card("Bencharki", "Achraf Bencharki", sq),
-                      _pitch_card("M. Sherif", "Mohamed Sherif", sq),
-                      _pitch_card("Trezeguet", "Trezeguet", sq)], style=rs),
-            html.Div([_pitch_card("El Shahat", "Hussein El Shahat", sq),
-                      _pitch_card("Ashour",    "Emam Ashour", sq),
-                      _pitch_card("Otaka",     "Marwan Otaka", sq)], style=rs),
-            html.Div([_pitch_card("A. Eid",    "Ahmed Eid", sq),
-                      _pitch_card("Y. Ibrahim","Yasser Ibrahim", sq),
-                      _pitch_card("M. Hany",   "Mohamed Hany", sq),
-                      _pitch_card("M. Ateya",  "Marwan Ateya", sq)], style=rs),
-            html.Div([_pitch_card("El Shenawy","Mohamed El Shenawy", sq)], style=rs),
-        ], style={"background": "linear-gradient(180deg,#1a4a1a 0%,#0d2e0d 100%)",
-                  "border": "2px solid #2d6a2d", "borderRadius": "8px", "padding": "20px 16px"}),
-        html.Div([
-            html.Span("\U0001f7e2 <28  ", style={"color": COLOR_MUTED, "fontSize": "11px"}),
-            html.Span("\U0001f7e1 28-30  ", style={"color": COLOR_MUTED, "fontSize": "11px"}),
-            html.Span("\U0001f534 >30  ", style={"color": COLOR_MUTED, "fontSize": "11px"}),
-            html.Span("⚡ Expiring  ", style={"color": COLOR_WARNING, "fontSize": "11px"}),
-            html.Span("\U0001f30d Foreign", style={"color": COLOR_MUTED, "fontSize": "11px"}),
-        ], style={"textAlign": "center", "marginTop": "6px"}),
+        html.Div(initials, style={
+            "width": "36px", "height": "36px", "borderRadius": "50%",
+            "background": dot_color, "border": "2px solid rgba(255,255,255,0.8)",
+            "display": "flex", "alignItems": "center", "justifyContent": "center",
+            "margin": "0 auto", "fontSize": "10px", "fontWeight": "700",
+            "color": "white", "fontFamily": FONT,
+        }),
+        html.Div(short + icons, style={
+            "fontSize": "9px", "color": "white", "marginTop": "2px",
+            "textShadow": "1px 1px 2px #000", "whiteSpace": "nowrap",
+            "fontFamily": FONT, "fontWeight": "500",
+        }),
+        html.Div(str(int(age)), style={
+            "fontSize": "9px", "color": "rgba(255,255,255,0.75)",
+            "textShadow": "1px 1px 2px #000", "fontFamily": FONT,
+        }),
+    ], style={
+        "position": "absolute",
+        "left":      f"{x_pct}%",
+        "top":       f"{y_pct}%",
+        "transform": "translate(-50%, -50%)",
+        "textAlign": "center",
+        "zIndex":    "10",
+        "minWidth":  "46px",
+    })
+
+def build_formation_pitch():
+    squad_idx = {r["player"]: r for r in SQUAD.to_dict("records")}
+    nodes = []
+    for role, name, xp, yp in FORMATION_XI:
+        p = squad_idx.get(name, {})
+        age      = float(p.get("age", 28))
+        foreign  = bool(p.get("is_foreign", False))
+        expiring = bool(p.get("contract_expiring", False))
+        nodes.append(player_node(role, name, xp, yp, age, foreign, expiring))
+
+    pitch_lines = [
+        # Halfway line
+        html.Div(style={"position":"absolute","top":"50%","left":"0","width":"100%",
+                        "height":"2px","background":"rgba(255,255,255,0.35)"}),
+        # Center circle
+        html.Div(style={"position":"absolute","top":"50%","left":"50%",
+                        "transform":"translate(-50%,-50%)","width":"70px","height":"70px",
+                        "borderRadius":"50%","border":"2px solid rgba(255,255,255,0.35)"}),
+        # Center dot
+        html.Div(style={"position":"absolute","top":"50%","left":"50%",
+                        "transform":"translate(-50%,-50%)","width":"5px","height":"5px",
+                        "borderRadius":"50%","background":"rgba(255,255,255,0.6)"}),
+        # Penalty area top (attacking end)
+        html.Div(style={"position":"absolute","top":"0","left":"22%","width":"56%","height":"16%",
+                        "border":"2px solid rgba(255,255,255,0.35)","borderTop":"none",
+                        "boxSizing":"border-box"}),
+        # Penalty area bottom (defensive end)
+        html.Div(style={"position":"absolute","bottom":"0","left":"22%","width":"56%","height":"16%",
+                        "border":"2px solid rgba(255,255,255,0.35)","borderBottom":"none",
+                        "boxSizing":"border-box"}),
+        # Goal top
+        html.Div(style={"position":"absolute","top":"0","left":"38%","width":"24%","height":"4%",
+                        "border":"2px solid rgba(255,255,255,0.5)","borderTop":"none",
+                        "background":"rgba(255,255,255,0.05)"}),
+        # Goal bottom
+        html.Div(style={"position":"absolute","bottom":"0","left":"38%","width":"24%","height":"4%",
+                        "border":"2px solid rgba(255,255,255,0.5)","borderBottom":"none",
+                        "background":"rgba(255,255,255,0.05)"}),
+    ]
+
+    legend = html.Div([
+        html.Span("⬤ ", style={"color": GREEN, "fontSize": "10px"}),
+        html.Span("<27  ", style={"color": TEXT_MUTED, "fontSize": "10px", "marginRight": "8px"}),
+        html.Span("⬤ ", style={"color": AMBER, "fontSize": "10px"}),
+        html.Span("27-29  ", style={"color": TEXT_MUTED, "fontSize": "10px", "marginRight": "8px"}),
+        html.Span("⬤ ", style={"color": RED, "fontSize": "10px"}),
+        html.Span("30+  ", style={"color": TEXT_MUTED, "fontSize": "10px", "marginRight": "8px"}),
+        html.Span("⚡ ", style={"fontSize": "10px"}),
+        html.Span("Expiring  ", style={"color": TEXT_MUTED, "fontSize": "10px", "marginRight": "8px"}),
+        html.Span("🌍 ", style={"fontSize": "10px"}),
+        html.Span("Foreign", style={"color": TEXT_MUTED, "fontSize": "10px"}),
+    ], style={"marginTop": "8px", "textAlign": "center"})
+
+    return html.Div([
+        html.Div(pitch_lines + nodes, style={
+            "position":     "relative",
+            "background":   "#1a5c1a",
+            "borderRadius": "6px",
+            "height":       "480px",
+            "width":        "100%",
+            "overflow":     "hidden",
+            "border":       "2px solid #2d7d2d",
+        }),
+        legend,
     ])
 
+# ── Tab 1: Squad Intelligence ─────────────────────────────────────────────────
+
 def build_gap_data():
-    pc = SQUAD["position_group"].value_counts().to_dict()
+    pos_counts = SQUAD["position_group"].value_counts().to_dict()
     rows = []
-    for pos in ["GK", "CB", "FB", "DM", "CM", "AM", "W", "ST"]:
-        cnt = pc.get(pos, 0)
-        pp = SQUAD[SQUAD["position_group"] == pos]
-        avg_age = pp["age"].mean() if len(pp) > 0 else 0
+    for pos in ["GK", "CB", "FB", "DM", "CM", "W", "ST"]:
+        cnt = pos_counts.get(pos, 0)
+        grp = SQUAD[SQUAD["position_group"] == pos]
+        avg_age = grp["age"].mean() if len(grp) > 0 else 0
         if cnt == 0:
-            status, action = "\U0001f534 EMPTY", f"Urgently sign {pos}"
+            status = "🔴 EMPTY"
+            action = f"Must sign {pos} immediately"
         elif cnt == 1:
-            status, action = "\U0001f534 CRITICAL", f"Sign {pos} backup"
+            status = "🔴 CRITICAL"
+            action = f"Sign {pos} backup — one injury = crisis"
         elif avg_age >= 29:
-            status, action = "\U0001f7e1 MONITOR", "Plan younger option"
+            status = "🟡 MONITOR"
+            action = "Plan younger option before peak ages out"
         else:
-            status, action = "\U0001f7e2 OK", "No action needed"
-        rows.append({"Position": pos, "Players": cnt, "Status": status, "Action": action})
+            status = "🟢 OK"
+            action = "Adequate depth and age profile"
+        rows.append({"Pos": pos, "Count": cnt,
+                     "Avg Age": f"{avg_age:.0f}" if cnt > 0 else "–",
+                     "Status": status, "Recommendation": action})
     return rows
 
 def build_priority_cards():
-    items = [
-        ("GK", "Aging starter — El Shenawy is 36yo"),
-        ("DM", "Only Aliou Dieng — no backup at DM"),
-        ("AM", "Only Ben Romdhane — no backup at AM"),
-        ("W",  "Average age 31 — squad aging at winger"),
-    ]
-    out = []
-    for pos, reason in items:
-        out.append(html.Div([
+    pos_counts = SQUAD["position_group"].value_counts().to_dict()
+    priority = []
+    for pos in ["GK", "CB", "FB", "DM", "CM", "W", "ST"]:
+        grp = SQUAD[SQUAD["position_group"] == pos]
+        cnt = pos_counts.get(pos, 0)
+        avg_age = grp["age"].mean() if len(grp) > 0 else 0
+        score = 0
+        reasons = []
+        if cnt == 0:
+            score += 30; reasons.append("no players")
+        elif cnt == 1:
+            score += 20; reasons.append("only 1 player")
+        if avg_age >= 30:
+            score += 15; reasons.append(f"avg age {avg_age:.0f}")
+        elif avg_age >= 28:
+            score += 8;  reasons.append(f"avg age {avg_age:.0f}")
+        if score > 0:
+            priority.append((pos, score, " · ".join(reasons)))
+    priority.sort(key=lambda x: x[1], reverse=True)
+
+    cards = []
+    for pos, score, reason in priority[:3]:
+        grp = SQUAD[SQUAD["position_group"] == pos]
+        age_txt = " / ".join(
+            f"{r['player'].split()[-1]} ({int(r['age'])})"
+            for _, r in grp.iterrows()
+        ) if len(grp) > 0 else "None"
+        cards.append(html.Div([
             html.Div([
-                html.Span(pos, style={"background": COLOR_PRIMARY, "color": "white",
-                                      "padding": "3px 10px", "borderRadius": "4px",
-                                      "fontWeight": "800", "fontSize": "13px", "marginRight": "10px"}),
-                html.Span(reason, style={"color": COLOR_MUTED, "fontSize": "12px"}),
-            ], style={"display": "flex", "alignItems": "center", "marginBottom": "8px"}),
-            dbc.Button(f"Find {pos} Targets →",
-                       id=f"btn-t1-{pos.lower()}", color="danger", size="sm", n_clicks=0),
-        ], style={**CARD_STYLE, "marginBottom": "8px"}))
-    return out
+                html.Span(pos, style={
+                    "background": RED, "color": "white",
+                    "padding": "2px 10px", "borderRadius": "4px",
+                    "fontWeight": "800", "fontSize": "12px",
+                    "marginRight": "10px", "fontFamily": FONT,
+                }),
+                html.Span(reason, style={"color": TEXT_MUTED, "fontSize": "12px", "fontFamily": FONT}),
+            ], style={"marginBottom": "4px"}),
+            html.Div(f"Current: {age_txt}",
+                     style={"fontSize": "11px", "color": TEXT_MUTED, "marginBottom": "8px",
+                            "fontFamily": FONT}),
+            html.Button(f"Find {pos} Targets →",
+                id={"type": "find-targets-btn", "pos": pos},
+                n_clicks=0,
+                style={
+                    "background": RED, "color": "white", "border": "none",
+                    "borderRadius": "6px", "padding": "6px 14px",
+                    "fontSize": "12px", "fontWeight": "600", "cursor": "pointer",
+                    "fontFamily": FONT,
+                }),
+        ], style={**CARD, "background": BG_CARD2, "marginBottom": "8px"}))
+    return cards
 
-tab1_layout = html.Div([
-    dbc.Row([
-        dbc.Col(kpi_card("Squad Size", len(SQUAD), "registered players"), md=3),
-        dbc.Col(kpi_card("Foreign Players", "5 / 5", "at maximum (CAF rules)", color=COLOR_PRIMARY), md=3),
-        dbc.Col(kpi_card("Age Risks", "1", "GK starter aged 36", color=COLOR_WARNING), md=3),
-        dbc.Col(kpi_card("Priority Gaps", "2", "DM and AM need cover", color="#FF5252"), md=3),
-    ], className="g-3", style={"marginBottom": "16px"}),
+def build_tab1():
+    sq = SQUAD
+    n_foreign  = int(sq["is_foreign"].sum())
+    n_expiring = int(sq["contract_expiring"].sum())
+    n_age_risk = int(sq[sq["position_group"].isin(["CB","FB","DM","CM","W","ST"])]["age"]
+                     .apply(lambda a: a >= 30).sum())
+    total_val  = sq["market_value_m"].sum()
 
-    dbc.Row([
-        dbc.Col([html.Div([
-            html.H5("\U000026bd Starting XI", style={**HDR, "marginBottom": "12px"}),
-            build_pitch(),
-        ], style=CARD_STYLE)], md=6),
+    if n_foreign == 5:
+        fc_color = RED
+    elif n_foreign == 4:
+        fc_color = AMBER
+    else:
+        fc_color = GREEN
 
-        dbc.Col([html.Div([
-            html.H5("\U0001f4ca Position Depth", style={**HDR, "marginBottom": "12px"}),
-            dash_table.DataTable(
-                id="gap-table", data=build_gap_data(),
-                columns=[{"name": c, "id": c} for c in ["Position", "Players", "Status", "Action"]],
-                style_table={"overflowX": "auto"},
-                style_header={"background": COLOR_BORDER, "color": COLOR_TEXT,
-                               "fontWeight": "700", "border": "none"},
-                style_cell={"background": COLOR_CARD, "color": COLOR_TEXT,
-                             "border": f"1px solid {COLOR_BORDER}", "padding": "8px 12px", "fontSize": "13px"},
-                style_data_conditional=[
-                    {"if": {"filter_query": '{Status} contains "CRITICAL" || {Status} contains "EMPTY"'},
-                     "color": COLOR_PRIMARY},
-                    {"if": {"filter_query": '{Status} contains "MONITOR"'}, "color": COLOR_WARNING},
-                    {"if": {"filter_query": '{Status} contains "OK"'}, "color": COLOR_SUCCESS},
-                ],
-            ),
-        ], style=CARD_STYLE)], md=6),
-    ]),
+    return html.Div([
+        # KPI Strip
+        dbc.Row([
+            dbc.Col(kpi_card("Squad Size", len(sq), "registered players"), md=True),
+            dbc.Col(kpi_card("Foreign Players", f"{n_foreign} / 5 slots",
+                             "CAF foreign player limit", color=fc_color), md=True),
+            dbc.Col(kpi_card("Expiring Contracts", n_expiring,
+                             "expire within 12 months",
+                             color=AMBER if n_expiring > 0 else GREEN), md=True),
+            dbc.Col(kpi_card("Age Risk", n_age_risk,
+                             "outfield starters ≥ 30",
+                             color=AMBER if n_age_risk > 3 else GREEN), md=True),
+            dbc.Col(kpi_card("Squad Value", f"€{total_val:.1f}m",
+                             "total market value"), md=True),
+        ], className="g-3", style={"marginBottom": "16px"}),
 
-    dbc.Row([dbc.Col([html.Div([
-        html.H5("\U0001f3af Priority Signings", style={**HDR, "marginBottom": "12px"}),
-        *build_priority_cards(),
-    ], style=CARD_STYLE)], md=12)]),
-], style={"padding": "16px"})
+        # Formation + Depth
+        dbc.Row([
+            dbc.Col([
+                html.Div([
+                    html.H5("⚽ Starting XI — 4-3-3", style={**H, "marginBottom": "12px", "fontSize": "15px"}),
+                    build_formation_pitch(),
+                ], style=CARD),
+            ], md=7),
+            dbc.Col([
+                html.Div([
+                    html.H5("📊 Position Depth", style={**H, "marginBottom": "12px", "fontSize": "15px"}),
+                    dash_table.DataTable(
+                        id="t1-gap-table",
+                        data=build_gap_data(),
+                        columns=[
+                            {"name": c, "id": c}
+                            for c in ["Pos", "Count", "Avg Age", "Status", "Recommendation"]
+                        ],
+                        style_table={"overflowX": "auto"},
+                        style_header=TBL_HEADER,
+                        style_cell={**TBL_CELL, "textAlign": "left"},
+                        style_cell_conditional=[
+                            {"if": {"column_id": "Pos"},    "width": "40px", "textAlign": "center", "fontWeight": "700"},
+                            {"if": {"column_id": "Count"},  "width": "50px", "textAlign": "center"},
+                            {"if": {"column_id": "Avg Age"},"width": "60px", "textAlign": "center"},
+                        ],
+                        style_data_conditional=[
+                            {"if": {"filter_query": '{Status} contains "EMPTY" || {Status} contains "CRITICAL"'},
+                             "color": RED},
+                            {"if": {"filter_query": '{Status} contains "MONITOR"'}, "color": AMBER},
+                            {"if": {"filter_query": '{Status} contains "OK"'},      "color": GREEN},
+                        ],
+                    ),
+                ], style=CARD),
+            ], md=5),
+        ], className="g-3", style={"marginBottom": "16px"}),
+
+        # Priority signings
+        dbc.Row([dbc.Col([
+            html.Div([
+                html.H5("🎯 Priority Signings", style={**H, "marginBottom": "12px", "fontSize": "15px"}),
+                html.P("Top 3 urgent positions. Click to launch targeted search.",
+                       style={"color": TEXT_MUTED, "fontSize": "12px", "marginBottom": "12px",
+                              "fontFamily": FONT}),
+                *build_priority_cards(),
+            ], style=CARD),
+        ], md=12)]),
+    ], style={"padding": "16px"})
 
 # ── Tab 2: Player Discovery ───────────────────────────────────────────────────
-tab2_layout = html.Div([
-    dbc.Row([
-        dbc.Col([html.Div([
-            html.H5("\U0001f50d Scout Search", style={**HDR, "marginBottom": "14px"}),
-            html.Label("Position Group *",
-                       style={"color": COLOR_MUTED, "fontSize": "12px", "fontWeight": "600"}),
-            dcc.Dropdown(id="t2-pos", options=POS_OPTIONS, placeholder="Select position...",
-                         clearable=False, style={"marginBottom": "12px"}),
-            html.Label("Leagues", style={"color": COLOR_MUTED, "fontSize": "12px", "fontWeight": "600"}),
-            dcc.Checklist(id="t2-leagues",
-                          options=[{"label": l, "value": l} for l in LEAGUES_IN_DATA],
-                          value=LEAGUES_IN_DATA,
-                          style={"color": COLOR_TEXT, "fontSize": "12px"},
-                          inputStyle={"marginRight": "6px"},
-                          labelStyle={"display": "block", "marginBottom": "3px"}),
-            html.Div(style={"height": "10px"}),
-            html.Label("Max Age", style={"color": COLOR_MUTED, "fontSize": "12px", "fontWeight": "600"}),
-            html.Div(id="t2-age-lbl", style={"color": COLOR_WARNING, "fontSize": "11px"}),
-            dcc.Slider(id="t2-age", min=16, max=35, value=30, step=1,
-                       marks={16: "16", 20: "20", 25: "25", 30: "30", 35: "35"}),
-            html.Label("Max Market Value",
-                       style={"color": COLOR_MUTED, "fontSize": "12px", "fontWeight": "600", "marginTop": "10px"}),
-            html.Div(id="t2-mv-lbl", style={"color": COLOR_WARNING, "fontSize": "11px"}),
-            dcc.Slider(id="t2-mv", min=0, max=15, value=3, step=0.5,
-                       marks={0: "€0", 5: "€5m", 10: "€10m", 15: "€15m"}),
-            html.Label("Min Minutes",
-                       style={"color": COLOR_MUTED, "fontSize": "12px", "fontWeight": "600", "marginTop": "10px"}),
-            dcc.Slider(id="t2-mins", min=900, max=3000, value=900, step=100,
-                       marks={900: "900", 1800: "1800", 3000: "3000"}),
-            html.Div(style={"height": "8px"}),
-            html.Label("Contract Status",
-                       style={"color": COLOR_MUTED, "fontSize": "12px", "fontWeight": "600"}),
-            dcc.RadioItems(id="t2-contract",
-                           options=[{"label": "All players", "value": "all"},
-                                    {"label": "Expiring only (⚡)", "value": "expiring"}],
-                           value="all", inputStyle={"marginRight": "6px"},
-                           labelStyle={"display": "block", "marginBottom": "3px"},
-                           style={"color": COLOR_TEXT, "fontSize": "12px"}),
-            html.Div(style={"height": "8px"}),
-            html.Label("Valuation", style={"color": COLOR_MUTED, "fontSize": "12px", "fontWeight": "600"}),
-            dcc.Checklist(id="t2-val",
-                          options=["Undervalued", "Fair Value", "Overvalued", "Unknown"],
-                          value=["Undervalued", "Fair Value", "Overvalued", "Unknown"],
-                          inputStyle={"marginRight": "6px"},
-                          labelStyle={"display": "block", "marginBottom": "3px"},
-                          style={"color": COLOR_TEXT, "fontSize": "12px"}),
-            html.Div(style={"height": "8px"}),
-            html.Label("Sort By", style={"color": COLOR_MUTED, "fontSize": "12px", "fontWeight": "600"}),
-            dcc.Dropdown(id="t2-sort", options=SORT_OPTIONS,
-                         value="adjusted_scouting_score", clearable=False),
-            html.Div(style={"height": "12px"}),
-            dbc.Button("Apply Filters", id="t2-apply", color="danger", className="w-100 mb-2"),
-            dbc.Button("Reset", id="t2-reset", color="secondary", className="w-100", size="sm"),
-        ], style={**CARD_STYLE, "height": "100%", "overflowY": "auto", "maxHeight": "90vh"})], md=3),
 
-        dbc.Col([html.Div([
-            dbc.Row([
-                dbc.Col(html.Div(id="t2-hdr",
-                                 children=html.P("Select a position to begin scouting.",
-                                                 style={"color": COLOR_MUTED, "margin": "0"}))),
-                dbc.Col([dbc.Button("↓ Export CSV", id="t2-export-btn",
-                                    color="secondary", size="sm"),
-                         dcc.Download(id="t2-dl")], width="auto"),
-            ], align="center", className="mb-3"),
-            dbc.Input(id="t2-search", placeholder="Search player or club...", type="text",
-                      style={"background": COLOR_DARK, "color": COLOR_TEXT,
-                             "border": f"1px solid {COLOR_BORDER}", "marginBottom": "8px"}),
-            html.Div(id="t2-tbl-wrap",
-                     children=html.P("No position selected.",
-                                     style={"color": COLOR_MUTED, "textAlign": "center", "padding": "40px 0"})),
-        ], style=CARD_STYLE)], md=9),
-    ]),
-], style={"padding": "16px"})
+LEAGUE_DIFFICULTY_DOTS = {
+    "Premier League": "●●●●●",
+    "La Liga":        "●●●●●",
+    "Bundesliga":     "●●●●●",
+    "Serie A":        "●●●●●",
+    "Ligue 1":        "●●●●●",
+}
 
-# ── Tab 3: Player Profile ─────────────────────────────────────────────────────
-tab3_layout = html.Div([
-    html.Div(id="t3-body", children=[
-        html.P("Click a player row in Player Discovery to view their profile.",
-               style={"color": COLOR_MUTED, "textAlign": "center",
-                      "padding": "80px 0", "fontSize": "16px"}),
-    ]),
-], style={"padding": "16px"})
-
-# ── Tab 4: Replacement Finder ─────────────────────────────────────────────────
-_all_opts = [
-    {"label": f"{r.player} ({r.team}, {r.position_group})", "value": r.player}
-    for _, r in DF.sort_values("adjusted_scouting_score", ascending=False).iterrows()
+SORT_OPTIONS = [
+    {"label": "Adjusted Score (default)", "value": "adjusted_scouting_score"},
+    {"label": "Raw Score",                "value": "raw_scouting_score"},
+    {"label": "Market Value ↑",           "value": "mv_asc"},
+    {"label": "Market Value ↓",           "value": "market_value_m"},
+    {"label": "Age ↑",                    "value": "age"},
+    {"label": "Value Gap",                "value": "value_gap_m"},
 ]
 
-tab4_layout = html.Div([
-    dbc.Row([
-        dbc.Col([
-            html.Div([
-                html.H5("\U0001f504 Reference Player", style={**HDR, "marginBottom": "12px"}),
-                dcc.Dropdown(id="t4-player", options=_all_opts,
-                             placeholder="Search any player...",
-                             style={"marginBottom": "8px"}, optionHeight=45),
-                html.Div(id="t4-mini"),
-            ], style=CARD_STYLE),
-            html.Div([
-                html.H5("\U0001f3af Criteria", style={**HDR, "marginBottom": "12px"}),
-                html.Label("Max Budget",
-                            style={"color": COLOR_MUTED, "fontSize": "12px", "fontWeight": "600"}),
-                html.Div(id="t4-bgt-lbl", style={"color": COLOR_WARNING, "fontSize": "11px"}),
-                dcc.Slider(id="t4-budget", min=0, max=15, value=3, step=0.5,
-                           marks={0: "€0", 5: "€5m", 10: "€10m", 15: "€15m"}),
-                html.Label("Max Age",
-                            style={"color": COLOR_MUTED, "fontSize": "12px",
-                                   "fontWeight": "600", "marginTop": "12px"}),
-                dcc.Slider(id="t4-age", min=16, max=35, value=28, step=1,
-                           marks={16: "16", 20: "20", 25: "25", 28: "28", 35: "35"}),
+def build_tab2():
+    league_opts = [
+        {"label": f"{l}  {LEAGUE_DIFFICULTY_DOTS.get(l, '')}", "value": l}
+        for l in LEAGUES_IN_DATA
+    ]
+    return html.Div([
+        dbc.Row([
+            # Sidebar
+            dbc.Col([html.Div([
+                html.Div("FILTERS", style={
+                    "color": RED, "fontSize": "11px", "fontWeight": "700",
+                    "letterSpacing": "1px", "marginBottom": "12px", "fontFamily": FONT,
+                }),
+
+                html.Label(["Position ", html.Span("*", style={"color": RED})],
+                           style={"color": TEXT_MUTED, "fontSize": "11px",
+                                  "fontWeight": "700", "fontFamily": FONT}),
+                dcc.Dropdown(id="t2-pos",
+                             options=[{"label": p, "value": p}
+                                      for p in ["CB","FB","DM","CM","AM","W","ST"]],
+                             placeholder="Select position…",
+                             clearable=False,
+                             style={"marginBottom": "14px",
+                                    "fontFamily": FONT, "fontSize": "13px"}),
+
+                html.Label("Target Leagues",
+                           style={"color": TEXT_MUTED, "fontSize": "11px",
+                                  "fontWeight": "700", "fontFamily": FONT}),
+                dcc.Checklist(id="t2-leagues",
+                              options=league_opts,
+                              value=LEAGUES_IN_DATA,
+                              inputStyle={"marginRight": "6px"},
+                              labelStyle={"display": "block", "marginBottom": "3px",
+                                          "fontSize": "12px", "color": TEXT,
+                                          "fontFamily": FONT}),
+
+                html.Hr(style={"borderColor": BORDER, "margin": "12px 0"}),
+                html.Label("Player Criteria",
+                           style={"color": TEXT_MUTED, "fontSize": "11px",
+                                  "fontWeight": "700", "fontFamily": FONT,
+                                  "marginBottom": "6px", "display": "block"}),
+
+                html.Div(id="t2-age-lbl",
+                         style={"color": AMBER, "fontSize": "11px", "fontFamily": FONT}),
+                dcc.Slider(id="t2-age", min=16, max=35, value=30, step=1,
+                           marks={16:"16", 20:"20", 25:"25", 30:"30", 35:"35"},
+                           tooltip={"placement":"bottom"}),
+
+                html.Div(id="t2-mv-lbl",
+                         style={"color": AMBER, "fontSize": "11px",
+                                "fontFamily": FONT, "marginTop": "4px"}),
+                dcc.Slider(id="t2-mv", min=0, max=15, value=3, step=0.5,
+                           marks={0:"€0", 5:"€5m", 10:"€10m", 15:"€15m"},
+                           tooltip={"placement":"bottom"}),
+
+                html.Div(id="t2-mins-lbl",
+                         style={"color": AMBER, "fontSize": "11px",
+                                "fontFamily": FONT, "marginTop": "4px"}),
+                dcc.Slider(id="t2-mins", min=900, max=3000, value=900, step=100,
+                           marks={900:"900", 1800:"1800", 3000:"3000"},
+                           tooltip={"placement":"bottom"}),
+
+                html.Hr(style={"borderColor": BORDER, "margin": "12px 0"}),
+                html.Label("Status Filters",
+                           style={"color": TEXT_MUTED, "fontSize": "11px",
+                                  "fontWeight": "700", "fontFamily": FONT,
+                                  "display": "block", "marginBottom": "4px"}),
+                dcc.RadioItems(id="t2-contract",
+                               options=[{"label": " All players",        "value": "all"},
+                                        {"label": " Expiring ⚡ only",   "value": "expiring"}],
+                               value="all",
+                               inputStyle={"marginRight": "5px"},
+                               labelStyle={"display": "block", "marginBottom": "3px",
+                                           "fontSize": "12px", "color": TEXT, "fontFamily": FONT}),
+                html.Div(style={"height": "6px"}),
+                dcc.Checklist(id="t2-val",
+                              options=["Undervalued", "Fair Value", "Overvalued"],
+                              value=["Undervalued", "Fair Value", "Overvalued"],
+                              inputStyle={"marginRight": "6px"},
+                              labelStyle={"display": "block", "marginBottom": "3px",
+                                          "fontSize": "12px", "color": TEXT, "fontFamily": FONT}),
+
+                html.Hr(style={"borderColor": BORDER, "margin": "12px 0"}),
+                html.Label("Sort By",
+                           style={"color": TEXT_MUTED, "fontSize": "11px",
+                                  "fontWeight": "700", "fontFamily": FONT}),
+                dcc.Dropdown(id="t2-sort", options=SORT_OPTIONS,
+                             value="adjusted_scouting_score", clearable=False,
+                             style={"marginBottom": "12px", "fontFamily": FONT, "fontSize": "12px"}),
+
+                html.Hr(style={"borderColor": BORDER, "margin": "12px 0"}),
+                html.Div([
+                    html.Span("⭐ Tactical Profile",
+                              style={"color": AMBER, "fontSize": "11px",
+                                     "fontWeight": "700", "fontFamily": FONT}),
+                    html.Div("Filter by playing style",
+                             style={"color": TEXT_MUTED, "fontSize": "10px",
+                                    "fontFamily": FONT, "marginBottom": "6px"}),
+                    dcc.Checklist(id="t2-tactical",
+                                  options=[], value=[],
+                                  inputStyle={"marginRight": "6px"},
+                                  labelStyle={"display": "block", "marginBottom": "4px",
+                                              "fontSize": "12px", "color": TEXT,
+                                              "fontFamily": FONT}),
+                ]),
+
+                html.Div(style={"height": "12px"}),
+                html.Button("Apply Filters", id="t2-apply", n_clicks=0,
+                            style={
+                                "width": "100%", "background": RED, "color": "white",
+                                "border": "none", "borderRadius": "6px",
+                                "padding": "9px 0", "fontWeight": "700",
+                                "cursor": "pointer", "fontFamily": FONT,
+                                "marginBottom": "6px", "fontSize": "13px",
+                            }),
+                html.Button("Reset", id="t2-reset", n_clicks=0,
+                            style={
+                                "width": "100%", "background": BG_CARD2, "color": TEXT_MUTED,
+                                "border": f"1px solid {BORDER}", "borderRadius": "6px",
+                                "padding": "7px 0", "cursor": "pointer",
+                                "fontFamily": FONT, "fontSize": "12px",
+                            }),
+            ], style={**CARD, "overflowY": "auto", "maxHeight": "90vh",
+                      "position": "sticky", "top": "0"})], md=3),
+
+            # Main panel
+            dbc.Col([html.Div([
                 dbc.Row([
-                    dbc.Col(html.Label("Different League",
-                                       style={"color": COLOR_MUTED, "fontSize": "12px", "fontWeight": "600"})),
-                    dbc.Col(dcc.RadioItems(id="t4-diff",
-                                          options=[{"label": "Yes", "value": True},
-                                                   {"label": "No", "value": False}],
-                                          value=False, inline=True,
-                                          inputStyle={"marginRight": "4px", "marginLeft": "8px"},
-                                          style={"color": COLOR_TEXT, "fontSize": "12px"})),
-                ], align="center", style={"marginTop": "12px"}),
-                dbc.Row([
-                    dbc.Col(html.Label("Target Leagues Only",
-                                       style={"color": COLOR_MUTED, "fontSize": "12px", "fontWeight": "600"})),
-                    dbc.Col(dcc.RadioItems(id="t4-tgt",
-                                          options=[{"label": "Yes", "value": True},
-                                                   {"label": "No", "value": False}],
-                                          value=True, inline=True,
-                                          inputStyle={"marginRight": "4px", "marginLeft": "8px"},
-                                          style={"color": COLOR_TEXT, "fontSize": "12px"})),
-                ], align="center", style={"marginTop": "8px"}),
-                dbc.Button("Find Replacements", id="t4-find",
-                           color="danger", className="w-100 mt-3"),
-            ], style=CARD_STYLE),
-        ], md=4),
+                    dbc.Col(html.Div(id="t2-hdr",
+                                     children=html.P(
+                                         "← Select a position to begin scouting",
+                                         style={"color": TEXT_MUTED, "margin": "0",
+                                                "fontFamily": FONT}
+                                     ))),
+                    dbc.Col([
+                        html.Button("↓ Export CSV", id="t2-export-btn", n_clicks=0,
+                                    style={
+                                        "background": BG_CARD2, "color": TEXT_MUTED,
+                                        "border": f"1px solid {BORDER}",
+                                        "borderRadius": "6px", "padding": "6px 12px",
+                                        "cursor": "pointer", "fontFamily": FONT,
+                                        "fontSize": "11px", "marginRight": "6px",
+                                    }),
+                        dcc.Download(id="t2-dl"),
+                    ], width="auto"),
+                ], align="center", className="mb-3"),
 
-        dbc.Col([
-            html.Div(id="t4-res", style=CARD_STYLE,
-                     children=html.P("Select a player and click Find Replacements.",
-                                     style={"color": COLOR_MUTED, "textAlign": "center", "padding": "60px 0"})),
-        ], md=8),
-    ]),
-], style={"padding": "16px"})
+                html.Div(id="t2-shortlist-msg",
+                         style={"color": GREEN, "fontSize": "12px",
+                                "marginBottom": "8px", "fontFamily": FONT}),
 
-# ── Tab 5: Market Intelligence ─────────────────────────────────────────────────
-tab5_layout = html.Div([
-    dbc.Row([
-        dbc.Col([html.Div([
-            html.H5("\U0001f4b0 Best Value Players (MV ≤ €3m)",
-                    style={**HDR, "marginBottom": "8px"}),
-            dcc.Graph(id="t5-bv", config={"displayModeBar": False}),
-        ], style=CARD_STYLE)], md=6),
-        dbc.Col([html.Div([
-            html.H5("\U0001f4c9 Value Gap by League", style={**HDR, "marginBottom": "8px"}),
-            dcc.Graph(id="t5-vg", config={"displayModeBar": False}),
-        ], style=CARD_STYLE)], md=6),
-    ]),
-    dbc.Row([
-        dbc.Col([html.Div([
-            dbc.Row([
-                dbc.Col(html.H5("⚡ Contract Expiring Targets", style=HDR)),
-                dbc.Col(dcc.Dropdown(id="t5-pos-flt",
-                                     options=[{"label": "All Positions", "value": "ALL"}] + POS_OPTIONS,
-                                     value="ALL", clearable=False,
-                                     style={"width": "160px"}), width="auto"),
-            ], align="center", className="mb-2"),
-            html.Div(id="t5-exp-tbl"),
-        ], style=CARD_STYLE)], md=6),
-        dbc.Col([html.Div([
-            html.H5("\U0001f3af Age-Value Sweet Spot", style={**HDR, "marginBottom": "8px"}),
-            dcc.Graph(id="t5-sc", config={"displayModeBar": False}),
-        ], style=CARD_STYLE)], md=6),
-    ]),
-], style={"padding": "16px"})
+                html.Div(id="t2-tbl-wrap",
+                         children=html.P(
+                             "Select a position to load results.",
+                             style={"color": TEXT_MUTED, "textAlign": "center",
+                                    "padding": "60px 0", "fontFamily": FONT}
+                         )),
+            ], style=CARD)], md=9),
+        ]),
+    ], style={"padding": "16px"})
 
-# ── App layout ────────────────────────────────────────────────────────────────
+# ── Tab 3: Player Profile ─────────────────────────────────────────────────────
+
+def build_tab3():
+    return html.Div([
+        html.Div(id="t3-body", children=[
+            html.P("Click a player row in Player Discovery to view their full profile.",
+                   style={"color": TEXT_MUTED, "textAlign": "center",
+                          "padding": "80px 0", "fontSize": "15px",
+                          "fontFamily": FONT}),
+        ]),
+    ], style={"padding": "16px"})
+
+# ── Tab 4: Shortlist ──────────────────────────────────────────────────────────
+
+def build_tab4():
+    return html.Div([
+        dbc.Row([
+            dbc.Col([
+                html.Div([
+                    dbc.Row([
+                        dbc.Col(html.H5("⭐ My Shortlist",
+                                        style={**H, "fontSize": "15px", "margin": "0"})),
+                        dbc.Col([
+                            html.Span(id="t4-count",
+                                      style={"color": TEXT_MUTED, "fontSize": "13px",
+                                             "fontFamily": FONT, "marginRight": "12px"}),
+                            html.Button("Clear All", id="t4-clear", n_clicks=0,
+                                        style={
+                                            "background": "transparent", "color": RED,
+                                            "border": f"1px solid {RED}",
+                                            "borderRadius": "6px", "padding": "4px 12px",
+                                            "cursor": "pointer", "fontFamily": FONT,
+                                            "fontSize": "12px",
+                                        }),
+                        ], width="auto"),
+                    ], align="center", className="mb-3"),
+                    html.Div(id="t4-table-wrap"),
+                ], style=CARD),
+            ], md=12),
+        ], className="g-3", style={"marginBottom": "16px"}),
+
+        dbc.Row([dbc.Col([
+            html.Div(id="t4-comparison-panel", style=CARD),
+        ], md=12)]),
+    ], style={"padding": "16px"})
+
+# ── Tab 5: Replacement Finder ─────────────────────────────────────────────────
+
+def build_tab5():
+    all_opts = [
+        {"label": f"{r['player']}  ({r['team']}, {r['position_group']})", "value": r["player"]}
+        for _, r in DF.sort_values("adjusted_scouting_score", ascending=False).iterrows()
+    ]
+    return html.Div([
+        dbc.Row([
+            dbc.Col([
+                html.Div([
+                    html.H5("🔄 Reference Player",
+                            style={**H, "marginBottom": "12px", "fontSize": "15px"}),
+                    html.P("Find a cheaper, younger version of any player",
+                           style={"color": TEXT_MUTED, "fontSize": "12px",
+                                  "fontFamily": FONT, "marginBottom": "10px"}),
+                    dcc.Dropdown(id="t5-player", options=all_opts,
+                                 placeholder="Search any player…",
+                                 optionHeight=45, style={"fontFamily": FONT}),
+                    html.Div(id="t5-mini", style={"marginTop": "10px"}),
+                ], style={**CARD, "marginBottom": "12px"}),
+
+                html.Div([
+                    html.H5("🎯 Criteria",
+                            style={**H, "marginBottom": "12px", "fontSize": "15px"}),
+                    html.Label("Target Budget",
+                               style={"color": TEXT_MUTED, "fontSize": "11px",
+                                      "fontWeight": "700", "fontFamily": FONT}),
+                    html.Div(id="t5-bgt-lbl",
+                             style={"color": AMBER, "fontSize": "11px", "fontFamily": FONT}),
+                    dcc.Slider(id="t5-budget", min=0, max=15, value=3, step=0.5,
+                               marks={0:"€0", 5:"€5m", 10:"€10m", 15:"€15m"},
+                               tooltip={"placement":"bottom"}),
+                    html.Label("Max Age",
+                               style={"color": TEXT_MUTED, "fontSize": "11px",
+                                      "fontWeight": "700", "fontFamily": FONT,
+                                      "marginTop": "10px", "display": "block"}),
+                    dcc.Slider(id="t5-age", min=16, max=35, value=28, step=1,
+                               marks={16:"16", 20:"20", 25:"25", 28:"28", 35:"35"},
+                               tooltip={"placement":"bottom"}),
+                    dbc.Row([
+                        dbc.Col(html.Label("Different League",
+                                           style={"color": TEXT_MUTED, "fontSize": "11px",
+                                                  "fontWeight": "700", "fontFamily": FONT}),
+                                width=8),
+                        dbc.Col(dbc.Switch(id="t5-diff-league", value=True,
+                                           label="", style={"marginTop": "4px"}), width=4),
+                    ], align="center", style={"marginTop": "10px"}),
+                    dbc.Row([
+                        dbc.Col(html.Label("Target Leagues Only",
+                                           style={"color": TEXT_MUTED, "fontSize": "11px",
+                                                  "fontWeight": "700", "fontFamily": FONT}),
+                                width=8),
+                        dbc.Col(dbc.Switch(id="t5-tgt-leagues", value=True,
+                                           label="", style={"marginTop": "4px"}), width=4),
+                    ], align="center", style={"marginTop": "6px"}),
+                    html.Div(style={"height": "12px"}),
+                    html.Button("Find Replacements", id="t5-find", n_clicks=0,
+                                style={
+                                    "width": "100%", "background": RED, "color": "white",
+                                    "border": "none", "borderRadius": "6px",
+                                    "padding": "9px 0", "fontWeight": "700",
+                                    "cursor": "pointer", "fontFamily": FONT,
+                                    "fontSize": "13px",
+                                }),
+                ], style=CARD),
+            ], md=4),
+
+            dbc.Col([
+                html.Div(id="t5-results", children=[
+                    html.P("Select a reference player and click Find Replacements",
+                           style={"color": TEXT_MUTED, "textAlign": "center",
+                                  "padding": "60px 0", "fontFamily": FONT}),
+                ], style=CARD),
+            ], md=8),
+        ]),
+    ], style={"padding": "16px"})
+
+# ── Tab 6: Market Intelligence ────────────────────────────────────────────────
+
+def build_tab6():
+    return html.Div([
+        dbc.Row([
+            dbc.Col([html.Div([
+                html.H5("💎 Best Value Under €3m",
+                        style={**H, "marginBottom": "8px", "fontSize": "14px"}),
+                dcc.Graph(id="t6-best-value",
+                          config={"displayModeBar": False},
+                          style={"height": "340px"}),
+            ], style=CARD)], md=6),
+            dbc.Col([html.Div([
+                html.H5("📊 Undervalued Players by League",
+                        style={**H, "marginBottom": "8px", "fontSize": "14px"}),
+                dcc.Graph(id="t6-undervalued",
+                          config={"displayModeBar": False},
+                          style={"height": "340px"}),
+            ], style=CARD)], md=6),
+        ], className="g-3", style={"marginBottom": "16px"}),
+
+        dbc.Row([
+            dbc.Col([html.Div([
+                html.Div([
+                    html.H5("⚡ Contract Expiring Targets",
+                            style={**H, "fontSize": "14px", "margin": "0",
+                                   "display": "inline-block"}),
+                    dcc.Dropdown(id="t6-pos-filter",
+                                 options=[{"label": "All Positions", "value": "ALL"}] +
+                                         [{"label": p, "value": p}
+                                          for p in ["CB","FB","DM","CM","AM","W","ST"]],
+                                 value="ALL", clearable=False,
+                                 style={"width": "160px", "display": "inline-block",
+                                        "marginLeft": "16px", "verticalAlign": "middle",
+                                        "fontFamily": FONT, "fontSize": "12px"}),
+                ], style={"marginBottom": "10px"}),
+                html.Div(id="t6-expiry-table"),
+            ], style=CARD)], md=6),
+            dbc.Col([html.Div([
+                html.H5("🎯 Al Ahly Target Zone",
+                        style={**H, "marginBottom": "8px", "fontSize": "14px"}),
+                html.P("Age 22-28 · Score >60 · Budget ≤€5m",
+                       style={"color": TEXT_MUTED, "fontSize": "11px",
+                              "marginBottom": "4px", "fontFamily": FONT}),
+                dcc.Graph(id="t6-scatter",
+                          config={"displayModeBar": False},
+                          style={"height": "340px"}),
+            ], style=CARD)], md=6),
+        ], className="g-3"),
+    ], style={"padding": "16px"})
+
+# ── App Init + Layout ─────────────────────────────────────────────────────────
+
 app = dash.Dash(
     __name__,
     external_stylesheets=[
         dbc.themes.BOOTSTRAP,
-        "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap",
+        "https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap",
     ],
     suppress_callback_exceptions=True,
     title="ScoutEdge v2",
 )
 server = app.server
 
-app.layout = html.Div([
-    dcc.Store(id="store-player", data=""),
-    dcc.Store(id="store-t2pos", data=""),
-    dcc.Store(id="store-t2data", data=[]),
+TAB_STYLE = {
+    "background": BG_DARK, "color": TEXT_MUTED,
+    "borderTop": "none", "borderLeft": "none", "borderRight": "none",
+    "borderBottom": f"1px solid {BORDER}",
+    "padding": "10px 20px", "fontFamily": FONT,
+    "fontSize": "13px", "fontWeight": "500",
+}
+TAB_SELECTED = {
+    **TAB_STYLE,
+    "color": TEXT, "borderBottom": f"3px solid {RED}",
+    "background": BG_DARK,
+}
 
-    html.Div(style={"height": "3px", "background": COLOR_PRIMARY}),
-    dbc.Container([
+app.layout = html.Div([
+    dcc.Store(id="shortlist-store",  storage_type="session", data=[]),
+    dcc.Store(id="selected-player",  data=None),
+    dcc.Store(id="nav-pos-store",    data=None),
+
+    # Header
+    html.Div([
         dbc.Row([
             dbc.Col([
-                html.Span("⚽ ", style={"fontSize": "22px"}),
-                html.Span("ScoutEdge",
-                          style={"color": COLOR_PRIMARY, "fontWeight": "800", "fontSize": "20px"}),
-                html.Span(" v2", style={"color": COLOR_MUTED, "fontSize": "13px", "marginLeft": "4px"}),
-            ], width="auto"),
-            dbc.Col(html.P("Al Ahly SC • Recruitment Intelligence • 2024-25",
-                           style={"color": COLOR_MUTED, "margin": "0", "fontSize": "13px"})),
-            dbc.Col(html.P(f"{len(DF):,} players • {DF['market_value_m'].notna().sum():,} valued",
-                           style={"color": COLOR_MUTED, "margin": "0",
-                                  "fontSize": "12px", "textAlign": "right"})),
-        ], align="center", style={"padding": "10px 0"}),
-    ], fluid=True,
-       style={"background": COLOR_CARD, "borderBottom": f"1px solid {COLOR_BORDER}"}),
+                html.Span("⚽ ", style={"color": RED, "fontSize": "22px"}),
+                html.Span("ScoutEdge v2",
+                          style={"color": RED, "fontWeight": "700",
+                                 "fontSize": "18px", "fontFamily": FONT}),
+                html.Span(" · Al Ahly SC · Recruitment Intelligence",
+                          style={"color": TEXT_MUTED, "fontSize": "13px",
+                                 "fontFamily": FONT, "marginLeft": "6px"}),
+            ]),
+            dbc.Col(
+                html.Div(f"1,435 players · 1,352 valued",
+                         style={"color": TEXT_MUTED, "fontSize": "12px",
+                                "fontFamily": FONT, "textAlign": "right"}),
+                width="auto",
+            ),
+        ], align="center"),
+    ], style={
+        "background": BG_DARK,
+        "borderBottom": f"3px solid {RED}",
+        "padding": "12px 24px",
+    }),
 
-    dcc.Tabs(id="tabs", value="t1",
-             children=[
-                 dcc.Tab(label="\U0001f3df  Squad Intelligence",   value="t1"),
-                 dcc.Tab(label="\U0001f50d  Player Discovery",     value="t2"),
-                 dcc.Tab(label="\U0001f464  Player Profile",       value="t3"),
-                 dcc.Tab(label="\U0001f504  Replacement Finder",   value="t4"),
-                 dcc.Tab(label="\U0001f4ca  Market Intelligence",  value="t5"),
-             ],
-             colors={"border": COLOR_BORDER, "primary": COLOR_PRIMARY, "background": COLOR_DARK}),
+    # Tabs
+    dcc.Tabs(
+        id="main-tabs", value="tab-squad",
+        style={"background": BG_DARK},
+        children=[
+            dcc.Tab(label="Squad Intelligence",  value="tab-squad",
+                    style=TAB_STYLE, selected_style=TAB_SELECTED),
+            dcc.Tab(label="Player Discovery",    value="tab-discovery",
+                    style=TAB_STYLE, selected_style=TAB_SELECTED),
+            dcc.Tab(label="Player Profile",      value="tab-profile",
+                    style=TAB_STYLE, selected_style=TAB_SELECTED),
+            dcc.Tab(id="tab-shortlist-label",
+                    label="Shortlist (0)",       value="tab-shortlist",
+                    style=TAB_STYLE, selected_style=TAB_SELECTED),
+            dcc.Tab(label="Replacement Finder",  value="tab-replacement",
+                    style=TAB_STYLE, selected_style=TAB_SELECTED),
+            dcc.Tab(label="Market Intelligence", value="tab-market",
+                    style=TAB_STYLE, selected_style=TAB_SELECTED),
+        ],
+    ),
 
-    html.Div(id="tab-body",
-             style={"background": COLOR_DARK, "minHeight": "calc(100vh - 100px)"}),
-], style={"background": COLOR_DARK, "fontFamily": "Inter,system-ui,sans-serif", "minHeight": "100vh"})
+    # Tab content
+    html.Div(id="tab-content",
+             style={"background": BG_DARK, "minHeight": "calc(100vh - 100px)"}),
 
+], style={"fontFamily": FONT, "background": BG_DARK, "minHeight": "100vh"})
 
-# ── Callbacks ──────────────────────────────────────────────────────────────────
+# ── Callbacks ─────────────────────────────────────────────────────────────────
 
-@app.callback(Output("tab-body", "children"), Input("tabs", "value"))
-def render_tab(t):
-    if t == "t1": return tab1_layout
-    if t == "t2": return tab2_layout
-    if t == "t3": return tab3_layout
-    if t == "t4": return tab4_layout
-    if t == "t5": return tab5_layout
-    return tab1_layout
-
-
-# Tab1: "Find Targets" buttons navigate to Tab2 with position pre-filled
 @app.callback(
-    Output("tabs", "value", allow_duplicate=True),
-    Output("store-t2pos", "data", allow_duplicate=True),
-    [Input(f"btn-t1-{p}", "n_clicks") for p in ["gk", "cb", "fb", "dm", "cm", "am", "w", "st"]],
+    Output("tab-content", "children"),
+    Input("main-tabs", "value"),
+)
+def render_tab(tab):
+    if tab == "tab-squad":
+        return build_tab1()
+    if tab == "tab-discovery":
+        return build_tab2()
+    if tab == "tab-profile":
+        return build_tab3()
+    if tab == "tab-shortlist":
+        return build_tab4()
+    if tab == "tab-replacement":
+        return build_tab5()
+    if tab == "tab-market":
+        return build_tab6()
+    return html.Div()
+
+# Tab 1 — navigate to discovery with pre-set position
+@app.callback(
+    [Output("main-tabs", "value"),
+     Output("nav-pos-store", "data")],
+    Input({"type": "find-targets-btn", "pos": dash.ALL}, "n_clicks"),
     prevent_initial_call=True,
 )
-def find_targets(*args):
-    tid = dash.callback_context.triggered_id
-    if not tid:
+def navigate_to_discovery(n_clicks_list):
+    ctx = callback_context
+    if not ctx.triggered:
         return no_update, no_update
-    pos = tid.replace("btn-t1-", "").upper()
-    return "t2", pos
+    trigger_id = ctx.triggered[0]["prop_id"]
+    import json
+    try:
+        id_dict = json.loads(trigger_id.split(".")[0])
+        pos = id_dict.get("pos")
+    except Exception:
+        return no_update, no_update
+    if all(n == 0 for n in (n_clicks_list or [])):
+        return no_update, no_update
+    return "tab-discovery", pos
 
+# Tab 2 — slider labels
+@app.callback(
+    [Output("t2-age-lbl",  "children"),
+     Output("t2-mv-lbl",   "children"),
+     Output("t2-mins-lbl", "children")],
+    [Input("t2-age", "value"),
+     Input("t2-mv",  "value"),
+     Input("t2-mins","value")],
+)
+def update_slider_labels(age, mv, mins):
+    return (f"Max Age: {age}",
+            f"Budget cap: €{mv}m",
+            f"Min Minutes: {mins}")
 
-@app.callback(Output("t2-pos", "value", allow_duplicate=True),
-              Input("store-t2pos", "data"), prevent_initial_call=True)
-def prefill_pos(pos):
-    return pos if pos else no_update
+# Tab 2 — populate tactical profiles based on selected position
+@app.callback(
+    [Output("t2-tactical", "options"),
+     Output("t2-tactical", "value")],
+    Input("t2-pos", "value"),
+)
+def update_tactical_options(pos):
+    if not pos or pos not in TACTICAL_PROFILES:
+        return [], []
+    profiles = TACTICAL_PROFILES[pos]
+    available = []
+    for name, conditions in profiles:
+        valid = any(col in DF.columns for col, op, thr in conditions)
+        if valid:
+            available.append({"label": name, "value": name})
+    return available, []
 
-
-# Tab2: slider labels
-@app.callback(Output("t2-age-lbl", "children"), Input("t2-age", "value"))
-def t2_age_lbl(v): return f"Max age: {v}"
-
-@app.callback(Output("t2-mv-lbl", "children"), Input("t2-mv", "value"))
-def t2_mv_lbl(v): return f"Max: €{v:.1f}m"
-
-@app.callback(Output("t4-bgt-lbl", "children"), Input("t4-budget", "value"))
-def t4_bgt_lbl(v): return f"Budget: €{v:.1f}m"
-
-
-# Tab2: reset filters
+# Tab 2 — pre-populate position from navigation store
 @app.callback(
     Output("t2-pos", "value"),
-    Output("t2-age", "value"),
-    Output("t2-mv", "value"),
-    Output("t2-mins", "value"),
-    Output("t2-contract", "value"),
-    Output("t2-sort", "value"),
-    Input("t2-reset", "n_clicks"),
+    Input("nav-pos-store", "data"),
     prevent_initial_call=True,
 )
-def t2_reset(_):
-    return None, 30, 3, 900, "all", "adjusted_scouting_score"
+def set_nav_position(pos):
+    return pos or no_update
 
-
-# Tab2: main filter callback
+# Tab 2 — apply filters + update results table
 @app.callback(
-    Output("t2-tbl-wrap", "children"),
-    Output("t2-hdr", "children"),
-    Output("store-t2data", "data"),
-    Input("t2-apply", "n_clicks"),
-    Input("t2-pos", "value"),
-    State("t2-leagues", "value"),
-    State("t2-age", "value"),
-    State("t2-mv", "value"),
-    State("t2-mins", "value"),
-    State("t2-contract", "value"),
-    State("t2-val", "value"),
-    State("t2-sort", "value"),
-    State("t2-search", "value"),
-    prevent_initial_call=False,
+    [Output("t2-tbl-wrap", "children"),
+     Output("t2-hdr",      "children")],
+    [Input("t2-apply", "n_clicks"),
+     Input("t2-reset", "n_clicks")],
+    [State("t2-pos",      "value"),
+     State("t2-leagues",  "value"),
+     State("t2-age",      "value"),
+     State("t2-mv",       "value"),
+     State("t2-mins",     "value"),
+     State("t2-contract", "value"),
+     State("t2-val",      "value"),
+     State("t2-sort",     "value"),
+     State("t2-tactical", "value"),
+     State("shortlist-store", "data")],
+    prevent_initial_call=True,
 )
-def t2_filter(n, pos, leagues, max_age, max_mv, min_mins, contract, valuation, sort_col, search):
-    no_pos = html.P("Select a position to begin scouting.",
-                    style={"color": COLOR_MUTED, "textAlign": "center", "padding": "40px 0"})
-    if not pos:
-        return no_pos, html.P("Select a position.", style={"color": COLOR_MUTED}), []
+def update_discovery(apply_n, reset_n, pos, leagues, max_age, max_mv, min_mins,
+                     contract, val_filter, sort_by, tactical, shortlist):
+    ctx = callback_context
+    if not ctx.triggered or not pos:
+        return (html.P("Select a position to load results.",
+                       style={"color": TEXT_MUTED, "textAlign": "center",
+                              "padding": "60px 0", "fontFamily": FONT}),
+                html.P("← Select a position to begin scouting",
+                       style={"color": TEXT_MUTED, "margin": "0", "fontFamily": FONT}))
 
-    filt = DF[DF["position_group"] == pos].copy()
+    triggered = ctx.triggered[0]["prop_id"]
+    if "reset" in triggered:
+        return (html.P("Filters reset. Adjust criteria and click Apply Filters.",
+                       style={"color": TEXT_MUTED, "textAlign": "center",
+                              "padding": "60px 0", "fontFamily": FONT}),
+                html.P("Filters reset", style={"color": TEXT_MUTED,
+                                               "margin": "0", "fontFamily": FONT}))
+
+    df = DF.copy()
+    df = df[df["position_group"] == pos]
     if leagues:
-        filt = filt[filt["league_clean"].isin(leagues)]
+        df = df[df["league_clean"].isin(leagues)]
     if max_age:
-        filt = filt[filt["age"] <= max_age]
+        df = df[df["age"] <= max_age]
     if max_mv is not None:
-        filt = filt[filt["market_value_m"].isna() | (filt["market_value_m"] <= max_mv)]
+        df = df[df["market_value_m"].isna() | (df["market_value_m"] <= max_mv)]
     if min_mins:
-        filt = filt[filt["minutes"] >= min_mins]
+        df = df[df["minutes"].fillna(0) >= min_mins]
     if contract == "expiring":
-        filt = filt[filt["contract_expiring"] == True]
-    if valuation:
-        filt = filt[filt["valuation_status"].isin(valuation)]
-    if search:
-        s = search.lower()
-        filt = filt[filt["player"].str.lower().str.contains(s, na=False) |
-                    filt["team"].str.lower().str.contains(s, na=False)]
+        df = df[df["contract_expiring"] == True]
+    if val_filter:
+        df = df[df["valuation_status"].isin(val_filter)]
+    if tactical:
+        df = apply_tactical_filter(df, pos, tactical)
 
-    asc = sort_col in ["age", "market_value_m"]
-    if sort_col and sort_col in filt.columns:
-        filt = filt.sort_values(sort_col, ascending=asc, na_position="last")
+    # Sort
+    if sort_by == "mv_asc":
+        df = df.sort_values("market_value_m", ascending=True)
+    elif sort_by in df.columns:
+        df = df.sort_values(sort_by, ascending=(sort_by == "age"))
+    else:
+        df = df.sort_values("adjusted_scouting_score", ascending=False)
 
-    if len(filt) == 0:
-        return (html.P("No players match these filters.",
-                       style={"color": COLOR_MUTED, "textAlign": "center", "padding": "40px 0"}),
-                html.P("0 players found.", style={"color": COLOR_MUTED}), [])
+    n = len(df)
+    if n == 0:
+        return (html.P("No players match your criteria.",
+                       style={"color": TEXT_MUTED, "textAlign": "center",
+                              "padding": "60px 0", "fontFamily": FONT}),
+                html.P(f"No results for {pos}", style={"color": TEXT_MUTED,
+                                                        "margin": "0", "fontFamily": FONT}))
 
-    tdata = []
-    for _, r in filt.iterrows():
-        tdata.append({
-            "Player": r["player"],
-            "Club":   r.get("team", ""),
-            "League": r.get("league_clean", ""),
-            "Age":    int(r["age"]) if pd.notna(r.get("age")) else "",
-            "Nat":    str(r.get("nationality", ""))[:3] if pd.notna(r.get("nationality")) else "",
-            "Pos":    r.get("position_group", ""),
-            "MV":     fmt_mv(r.get("market_value_m")),
-            "Raw":    f"{r['raw_scouting_score']:.0f}" if pd.notna(r.get("raw_scouting_score")) else "-",
-            "Adj":    f"{r['adjusted_scouting_score']:.0f}" if pd.notna(r.get("adjusted_scouting_score")) else "-",
-            "Status": r.get("valuation_status", "Unknown"),
-            "Ctrt":   "⚡" if r.get("contract_expiring") else "",
+    shortlist_names = [p["player"] for p in (shortlist or [])]
+
+    table_data = []
+    for _, r in df.iterrows():
+        star = "★" if r["player"] in shortlist_names else "☆"
+        mv_str = f"€{r['market_value_m']:.2f}m" if pd.notna(r["market_value_m"]) else "–"
+        contract_ico = "⚡" if r.get("contract_expiring") else ""
+        table_data.append({
+            "★":       star,
+            "Player":  r["player"],
+            "Club":    r.get("team", ""),
+            "League":  r.get("league_clean", ""),
+            "Age":     int(r["age"]) if pd.notna(r["age"]) else "–",
+            "Pos":     r.get("position_group", ""),
+            "MV (€m)": mv_str,
+            "Raw":     round(float(r["raw_scouting_score"]), 1) if pd.notna(r["raw_scouting_score"]) else "–",
+            "Score":   round(float(r["adjusted_scouting_score"]), 1) if pd.notna(r["adjusted_scouting_score"]) else "–",
+            "Status":  r.get("valuation_status", ""),
+            "Exp":     contract_ico,
         })
 
     tbl = dash_table.DataTable(
-        id="t2-tbl", data=tdata,
-        columns=[{"name": c, "id": c}
-                 for c in ["Player", "Club", "League", "Age", "Nat", "Pos",
-                            "MV", "Raw", "Adj", "Status", "Ctrt"]],
-        page_size=25, page_action="native", sort_action="native",
-        row_selectable="single", selected_rows=[],
+        id="t2-table",
+        data=table_data,
+        columns=[{"name": c, "id": c} for c in
+                 ["★", "Player", "Club", "League", "Age", "Pos",
+                  "MV (€m)", "Raw", "Score", "Status", "Exp"]],
+        page_size=25,
+        sort_action="native",
+        filter_action="native",
+        row_selectable=False,
         style_table={"overflowX": "auto"},
-        style_header={"background": COLOR_BORDER, "color": COLOR_TEXT,
-                       "fontWeight": "700", "border": "none", "fontSize": "12px"},
-        style_cell={"background": COLOR_CARD, "color": COLOR_TEXT,
-                    "border": f"1px solid {COLOR_BORDER}",
-                    "padding": "8px 10px", "fontSize": "12px",
-                    "maxWidth": "160px", "whiteSpace": "normal"},
-        style_data_conditional=[
-            {"if": {"row_index": "odd"}, "background": "#111111"},
-            {"if": {"column_id": "Status", "filter_query": '{Status} = "Undervalued"'},
-             "color": COLOR_SUCCESS},
-            {"if": {"column_id": "Status", "filter_query": '{Status} = "Overvalued"'},
-             "color": COLOR_PRIMARY},
-            {"if": {"column_id": "Ctrt"}, "color": COLOR_WARNING, "fontSize": "14px"},
-            {"if": {"state": "selected"},
-             "background": "#2A1A1A", "border": f"1px solid {COLOR_PRIMARY}"},
+        style_header=TBL_HEADER,
+        style_cell={**TBL_CELL, "textAlign": "left", "maxWidth": "160px",
+                    "overflow": "hidden", "textOverflow": "ellipsis"},
+        style_cell_conditional=[
+            {"if": {"column_id": "★"},    "width": "30px", "textAlign": "center",
+             "cursor": "pointer", "color": AMBER, "fontSize": "14px"},
+            {"if": {"column_id": "Age"},  "width": "40px", "textAlign": "center"},
+            {"if": {"column_id": "Pos"},  "width": "40px", "textAlign": "center"},
+            {"if": {"column_id": "Raw"},  "width": "55px", "textAlign": "center"},
+            {"if": {"column_id": "Score"},"width": "55px", "textAlign": "center"},
+            {"if": {"column_id": "Exp"},  "width": "30px", "textAlign": "center",
+             "color": AMBER},
         ],
-        style_filter={"background": COLOR_DARK, "color": COLOR_TEXT,
-                      "border": f"1px solid {COLOR_BORDER}"},
+        style_data_conditional=[
+            {"if": {"row_index": "odd"}, "background": BG_CARD2},
+            {"if": {"filter_query": '{Status} = "Undervalued"'},
+             "color": GREEN},
+            {"if": {"filter_query": '{Status} = "Overvalued"'},
+             "color": RED},
+            {"if": {"filter_query": '{★} = "★"'}, "color": AMBER},
+        ],
+        active_cell=None,
+        tooltip_delay=0,
+        tooltip_duration=None,
     )
-
-    hdr = html.P(f"{len(filt)} {pos} players found",
-                 style={"color": COLOR_TEXT, "fontWeight": "600", "margin": "0"})
-    return tbl, hdr, tdata
-
-
-# Tab2: row click -> Tab3
-@app.callback(
-    Output("store-player", "data"),
-    Output("tabs", "value", allow_duplicate=True),
-    Input("t2-tbl", "selected_rows"),
-    State("store-t2data", "data"),
-    prevent_initial_call=True,
-)
-def t2_row_click(rows, tdata):
-    if not rows or not tdata:
-        return no_update, no_update
-    return tdata[rows[0]]["Player"], "t3"
-
-
-# Tab2: export CSV
-@app.callback(Output("t2-dl", "data"),
-              Input("t2-export-btn", "n_clicks"),
-              State("store-t2data", "data"),
-              prevent_initial_call=True)
-def t2_export(n, tdata):
-    if not n or not tdata:
-        return no_update
-    return dcc.send_data_frame(pd.DataFrame(tdata).to_csv,
-                               "scoutedge_discovery.csv", index=False)
-
-
-# Tab3: player profile
-@app.callback(Output("t3-body", "children"), Input("store-player", "data"))
-def t3_profile(player_name):
-    if not player_name:
-        return html.P("Click a player row in Player Discovery to view their profile.",
-                      style={"color": COLOR_MUTED, "textAlign": "center",
-                             "padding": "80px 0", "fontSize": "16px"})
-
-    mask = DF["player"].str.lower().str.strip() == player_name.lower().strip()
-    if not mask.any():
-        mask = DF["player"].str.lower().str.contains(
-            player_name.lower().strip(), na=False, regex=False)
-    if not mask.any():
-        return html.P(f"'{player_name}' not found.",
-                      style={"color": COLOR_PRIMARY, "textAlign": "center", "padding": "40px 0"})
-
-    r = DF[mask].iloc[0]
-    pos = r.get("position_group", "CM")
-    pos_df = DF[DF["position_group"] == pos]
-
-    # Header
-    exp_badge = (html.Span(" ⚡ Expiring",
-                            style={"background": f"{COLOR_WARNING}22", "color": COLOR_WARNING,
-                                   "padding": "2px 8px", "borderRadius": "12px",
-                                   "fontSize": "11px", "marginLeft": "8px"})
-                 if r.get("contract_expiring") else html.Span())
 
     hdr = html.Div([
+        html.Span(f"{n} player{'s' if n != 1 else ''} found",
+                  style={"color": TEXT, "fontWeight": "700",
+                         "fontSize": "14px", "fontFamily": FONT}),
+        html.Span(f"  ·  {pos}  ·  click ☆ to shortlist · click row to profile",
+                  style={"color": TEXT_MUTED, "fontSize": "11px",
+                         "fontFamily": FONT}),
+    ])
+    return tbl, hdr
+
+# Tab 2 — row click → profile or shortlist
+@app.callback(
+    [Output("selected-player",   "data"),
+     Output("main-tabs",         "value"),
+     Output("shortlist-store",   "data"),
+     Output("t2-shortlist-msg",  "children")],
+    Input("t2-table", "active_cell"),
+    [State("t2-table",        "data"),
+     State("shortlist-store", "data")],
+    prevent_initial_call=True,
+)
+def handle_table_click(active_cell, table_data, shortlist):
+    if not active_cell or not table_data:
+        return no_update, no_update, no_update, no_update
+    row   = table_data[active_cell["row"]]
+    pname = row.get("Player", "")
+    col   = active_cell.get("column_id", "")
+
+    if col == "★":
+        shortlist = list(shortlist or [])
+        names = [p["player"] for p in shortlist]
+        if pname in names:
+            shortlist = [p for p in shortlist if p["player"] != pname]
+            msg = f"✓ Removed {pname} from shortlist"
+            return no_update, no_update, shortlist, msg
+        if len(shortlist) >= 10:
+            return no_update, no_update, no_update, "⚠ Shortlist full (max 10 players)"
+        pr = DF[DF["player"] == pname]
+        if not pr.empty:
+            r = pr.iloc[0]
+            shortlist.append({
+                "player":               pname,
+                "team":                 str(r.get("team", "")),
+                "league":               str(r.get("league_clean", "")),
+                "age":                  float(r["age"]) if pd.notna(r["age"]) else 0,
+                "position_group":       str(r.get("position_group", "")),
+                "market_value_m":       float(r["market_value_m"]) if pd.notna(r["market_value_m"]) else 0,
+                "adjusted_scouting_score": float(r["adjusted_scouting_score"]) if pd.notna(r["adjusted_scouting_score"]) else 0,
+                "valuation_status":     str(r.get("valuation_status", "")),
+                "contract_expiring":    bool(r.get("contract_expiring", False)),
+            })
+        msg = f"⭐ Added {pname} to shortlist ({len(shortlist)}/10)"
+        return no_update, no_update, shortlist, msg
+    else:
+        return pname, "tab-profile", no_update, no_update
+
+# Tab 2 — export CSV
+@app.callback(
+    Output("t2-dl", "data"),
+    Input("t2-export-btn", "n_clicks"),
+    State("t2-table", "data"),
+    prevent_initial_call=True,
+)
+def export_csv(n, table_data):
+    if not n or not table_data:
+        return no_update
+    df_exp = pd.DataFrame(table_data)
+    return dcc.send_data_frame(df_exp.to_csv, "scoutedge_results.csv", index=False)
+
+# Tab 3 — render player profile
+@app.callback(
+    Output("t3-body", "children"),
+    Input("selected-player", "data"),
+    State("shortlist-store", "data"),
+    prevent_initial_call=True,
+)
+def render_profile(player_name, shortlist):
+    if not player_name:
+        return html.P("No player selected.",
+                      style={"color": TEXT_MUTED, "textAlign": "center",
+                             "padding": "80px 0", "fontFamily": FONT})
+
+    pr = DF[DF["player"] == player_name]
+    if pr.empty:
+        return html.P(f"Player '{player_name}' not found in database.",
+                      style={"color": TEXT_MUTED, "textAlign": "center",
+                             "padding": "80px 0", "fontFamily": FONT})
+    r   = pr.iloc[0]
+    pos = str(r.get("position_group", ""))
+    mv  = r.get("market_value_m")
+    val = str(r.get("valuation_status", ""))
+    exp = bool(r.get("contract_expiring", False))
+
+    shortlist_names = [p["player"] for p in (shortlist or [])]
+    star_label = "★ In Shortlist" if player_name in shortlist_names else "☆ Add to Shortlist"
+
+    # Header
+    mv_badge = badge(f"€{mv:.2f}m" if pd.notna(mv) else "–", BLUE, BLUE + "22")
+    val_badge = badge(val, val_badge_color(val), val_badge_color(val) + "22")
+    exp_badge = badge("⚡ Expiring", AMBER, AMBER + "22") if exp else None
+
+    badges = [mv_badge, html.Span(" "), val_badge]
+    if exp_badge:
+        badges += [html.Span(" "), exp_badge]
+
+    header = html.Div([
         dbc.Row([
             dbc.Col([
-                html.H3(r["player"], style={"color": COLOR_TEXT, "margin": "0", "fontWeight": "800"}),
-                html.P(f"{r.get('team', '')} • {r.get('league_clean', '')} • "
-                       f"Age {int(r['age']) if pd.notna(r.get('age')) else '?'} • "
-                       f"{r.get('nationality', '')}",
-                       style={"color": COLOR_MUTED, "margin": "4px 0 0", "fontSize": "13px"}),
+                html.H3(player_name, style={"color": TEXT, "fontWeight": "700",
+                                            "fontFamily": FONT, "marginBottom": "4px"}),
+                html.Div([
+                    html.Span(f"{r.get('team', '–')}  ·  ", style={"color": TEXT_MUTED, "fontFamily": FONT}),
+                    html.Span(f"{r.get('league_clean', '–')}  ·  ", style={"color": TEXT_MUTED, "fontFamily": FONT}),
+                    html.Span(f"Age {int(r['age']) if pd.notna(r['age']) else '–'}  ·  ", style={"color": TEXT_MUTED, "fontFamily": FONT}),
+                    html.Span(str(r.get("nationality", "–")), style={"color": TEXT_MUTED, "fontFamily": FONT}),
+                ], style={"marginBottom": "8px"}),
+                html.Div(badges),
             ]),
             dbc.Col([
-                html.Div([
-                    html.Span(fmt_mv(r.get("market_value_m")),
-                              style={"background": "#1565C022", "color": "#5C9FE8",
-                                     "padding": "4px 12px", "borderRadius": "6px",
-                                     "fontWeight": "700", "fontSize": "15px", "marginRight": "8px"}),
-                    exp_badge,
-                ], style={"display": "flex", "alignItems": "center", "justifyContent": "flex-end"}),
-                html.P(f"Adj Score: {r['adjusted_scouting_score']:.0f}  •  "
-                       f"Raw: {r['raw_scouting_score']:.0f}  •  {r.get('valuation_status', '')}",
-                       style={"color": COLOR_MUTED, "fontSize": "12px",
-                              "margin": "6px 0 0", "textAlign": "right"}),
-            ]),
-        ]),
-    ], style={**CARD_STYLE, "marginBottom": "12px"})
+                html.Button(star_label, id="t3-shortlist-btn",
+                            **{"data-player": player_name},
+                            n_clicks=0,
+                            style={
+                                "background": BG_CARD2, "color": AMBER,
+                                "border": f"1px solid {AMBER}",
+                                "borderRadius": "6px", "padding": "8px 16px",
+                                "cursor": "pointer", "fontFamily": FONT,
+                                "fontWeight": "600", "fontSize": "13px",
+                            }),
+            ], width="auto", style={"display": "flex", "alignItems": "center"}),
+        ], align="center"),
+    ], style={**CARD, "marginBottom": "16px"})
 
     # Stat bars
-    weights = SCOUTING_WEIGHTS.get(pos, {})
-    bars = []
-    for feat in weights:
-        val = r.get(feat)
-        pct = get_pct(pos_df, val, feat)
-        bar_c = (COLOR_SUCCESS if pct >= 67
-                 else COLOR_WARNING if pct >= 34
-                 else "#FF5252")
-        display = f"{float(val):.2f}" if pd.notna(val) else "N/A"
-        label = feat.replace("_p90", "").replace("_", " ").title()
-        bars.append(html.Div([
+    metrics = RADAR_METRICS.get(pos, [])
+    pos_df  = DF[DF["position_group"] == pos]
+    stat_bars = []
+    for label, col in metrics:
+        if col not in r.index or col not in DF.columns:
+            continue
+        val_num = pd.to_numeric(r[col], errors="coerce")
+        if pd.isna(val_num):
+            continue
+        pct = pct_rank(val_num, pos_df[col])
+        if pct <= 33:
+            bar_color = RED + "88"
+        elif pct <= 66:
+            bar_color = AMBER + "88"
+        else:
+            bar_color = GREEN + "88"
+        stat_bars.append(html.Div([
             dbc.Row([
-                dbc.Col(html.Span(label, style={"color": COLOR_TEXT, "fontSize": "11px"}), md=5),
-                dbc.Col(html.Span(display, style={"color": COLOR_MUTED,
-                                                   "fontSize": "10px", "textAlign": "right"}), md=2),
-                dbc.Col([html.Div(
-                    style={"background": COLOR_BORDER, "borderRadius": "3px",
-                           "height": "7px", "overflow": "hidden"},
-                    children=[html.Div(style={"width": f"{pct:.0f}%",
-                                              "background": bar_c, "height": "100%"})])], md=3),
-                dbc.Col(html.Span(f"T{100-int(pct)}%",
-                                  style={"color": COLOR_MUTED, "fontSize": "9px",
-                                         "textAlign": "right"}), md=2),
-            ], align="center", style={"marginBottom": "7px"}),
+                dbc.Col(html.Div(label,
+                                 style={"color": TEXT, "fontSize": "12px",
+                                        "fontFamily": FONT, "fontWeight": "500"}), width=4),
+                dbc.Col(html.Div(f"{val_num:.2f}", style={"color": TEXT_MUTED,
+                                                            "fontSize": "11px",
+                                                            "fontFamily": FONT,
+                                                            "textAlign": "right"}), width=2),
+                dbc.Col(html.Div([
+                    html.Div(style={
+                        "width": f"{pct}%", "height": "8px",
+                        "background": bar_color, "borderRadius": "4px",
+                        "transition": "width 0.3s",
+                    }),
+                ], style={"background": BORDER, "borderRadius": "4px", "overflow": "hidden"}), width=4),
+                dbc.Col(html.Div(f"Top {100-int(pct)}%",
+                                 style={"color": TEXT_MUTED, "fontSize": "10px",
+                                        "fontFamily": FONT, "textAlign": "right"}), width=2),
+            ], align="center", className="mb-1"),
         ]))
 
+    stat_panel = html.Div([
+        html.H6("Performance Profile",
+                style={"color": TEXT, "fontWeight": "600", "fontFamily": FONT,
+                       "marginBottom": "2px"}),
+        html.Div(f"vs {pos} peers in Big 5 leagues",
+                 style={"color": TEXT_MUTED, "fontSize": "11px",
+                        "fontFamily": FONT, "marginBottom": "12px"}),
+        *stat_bars,
+    ], style=CARD)
+
     # Radar chart
-    metrics = RADAR_METRICS.get(pos, RADAR_METRICS["CM"])
-    rvals = [round(get_pct(pos_df, r.get(col), col), 1) for _, col in metrics]
-    rlbls = [lbl for lbl, _ in metrics]
-    radar_fig = go.Figure(go.Scatterpolar(
-        r=rvals + [rvals[0]], theta=rlbls + [rlbls[0]],
-        fill="toself",
-        line=dict(color=COLOR_PRIMARY, width=2),
-        fillcolor="rgba(204,0,0,0.15)",
-    ))
-    radar_fig.update_layout(
+    radar_metrics = RADAR_METRICS.get(pos, [])
+    r_labels = [lbl for lbl, col in radar_metrics if col in DF.columns]
+    r_values = []
+    for lbl, col in radar_metrics:
+        if col not in DF.columns:
+            continue
+        val_num = pd.to_numeric(r[col], errors="coerce")
+        r_values.append(pct_rank(val_num, pos_df[col]))
+
+    fig_radar = go.Figure()
+    if r_labels and r_values:
+        fig_radar.add_trace(go.Scatterpolar(
+            r=r_values + [r_values[0]],
+            theta=r_labels + [r_labels[0]],
+            fill="toself",
+            fillcolor=f"rgba(204,0,0,0.2)",
+            line=dict(color=RED, width=2),
+            name=player_name,
+        ))
+
+    fig_radar.update_layout(
+        **CHART_DEFAULTS,
         polar=dict(
-            radialaxis=dict(visible=True, range=[0, 100], color=COLOR_MUTED,
-                            gridcolor=COLOR_BORDER, tickfont=dict(size=9, color=COLOR_MUTED)),
-            angularaxis=dict(color=COLOR_TEXT, gridcolor=COLOR_BORDER),
-            bgcolor=COLOR_CARD,
+            bgcolor=BG_CARD2,
+            radialaxis=dict(visible=True, range=[0, 100],
+                            tickfont=dict(size=8, color=TEXT_MUTED),
+                            gridcolor=BORDER),
+            angularaxis=dict(tickfont=dict(size=10, color=TEXT)),
         ),
-        paper_bgcolor=COLOR_CARD, plot_bgcolor=COLOR_CARD,
-        font=dict(color=COLOR_TEXT, family="Inter,system-ui"),
-        showlegend=False, margin=dict(l=50, r=50, t=20, b=20), height=290,
+        showlegend=True,
+        legend=dict(x=0, y=1.1, font=dict(size=10, color=TEXT)),
+        height=320,
     )
 
+    radar_panel = html.Div([
+        html.H6("Radar Chart", style={"color": TEXT, "fontWeight": "600",
+                                       "fontFamily": FONT, "marginBottom": "2px"}),
+        html.Div(f"Percentile vs {pos} peers",
+                 style={"color": TEXT_MUTED, "fontSize": "11px",
+                        "fontFamily": FONT, "marginBottom": "8px"}),
+        dcc.Graph(figure=fig_radar, config={"displayModeBar": False}),
+    ], style=CARD)
+
     # vs Al Ahly comparison
-    ah_pos = SQUAD[SQUAD["position_group"] == pos]
-    if len(ah_pos) == 0:
-        comp = html.P(f"No Al Ahly {pos} to compare — this would be a new position.",
-                      style={"color": COLOR_MUTED, "fontSize": "12px", "fontStyle": "italic"})
-    else:
-        ah = ah_pos.nlargest(1, "minutes_24_25").iloc[0]
-        comp_rows = []
-        for feat in list(weights.keys())[:5]:
-            if feat == "goals_p90":
-                ah_v = (ah["goals_24_25"] / (ah["minutes_24_25"] / 90)
-                        if ah["minutes_24_25"] > 0 else 0)
-            elif feat == "assists_p90":
-                ah_v = (ah["assists_24_25"] / (ah["minutes_24_25"] / 90)
-                        if ah["minutes_24_25"] > 0 else 0)
-            else:
-                ah_v = None
-            target_v = r.get(feat)
-            lbl = feat.replace("_p90", "").replace("_", " ").title()
-            ah_s = f"{ah_v:.2f}" if ah_v is not None else "-"
-            tgt_s = f"{float(target_v):.2f}" if pd.notna(target_v) else "-"
-            if ah_v is not None and pd.notna(target_v):
-                tc = COLOR_SUCCESS if float(target_v) > ah_v else "#FF5252"
-            else:
-                tc = COLOR_MUTED
-            comp_rows.append(html.Tr([
-                html.Td(lbl, style={"padding": "5px 8px", "color": COLOR_TEXT, "fontSize": "11px"}),
-                html.Td(ah_s, style={"padding": "5px 8px", "color": COLOR_MUTED,
-                                      "fontSize": "11px", "textAlign": "center"}),
-                html.Td(tgt_s, style={"padding": "5px 8px", "color": tc,
-                                       "fontSize": "11px", "textAlign": "center",
-                                       "fontWeight": "600"}),
-            ]))
-        ah_db = DF[DF["player"].str.lower() == ah["player"].lower()]
-        ah_sc = float(ah_db["adjusted_scouting_score"].iloc[0]) if len(ah_db) > 0 else None
-        tsc = float(r.get("adjusted_scouting_score", 0))
-        if ah_sc is not None:
-            diff = tsc - ah_sc
-            verdict = ("UPGRADE" if diff > 5
-                       else "DOWNGRADE" if diff < -5
-                       else "SIMILAR")
-            vc = (COLOR_SUCCESS if verdict == "UPGRADE"
-                  else COLOR_PRIMARY if verdict == "DOWNGRADE"
-                  else COLOR_WARNING)
-            comp_rows.append(html.Tr([
-                html.Td("Adj Score", style={"padding": "5px 8px", "color": COLOR_TEXT,
-                                             "fontSize": "11px", "fontWeight": "700"}),
-                html.Td(f"{ah_sc:.0f}", style={"padding": "5px 8px", "color": COLOR_TEXT,
-                                                "textAlign": "center", "fontWeight": "700"}),
-                html.Td(f"{tsc:.0f}", style={"padding": "5px 8px", "color": vc,
-                                              "textAlign": "center", "fontWeight": "700"}),
-            ]))
-            vbadge = html.Div(verdict,
-                              style={"background": f"{vc}22", "color": vc,
-                                     "padding": "4px 16px", "borderRadius": "4px",
-                                     "fontWeight": "800", "textAlign": "center",
-                                     "marginTop": "8px", "fontSize": "13px"})
+    ahly_at_pos = SQUAD[SQUAD["position_group"] == pos]
+    if len(ahly_at_pos) > 0:
+        ahly_p = ahly_at_pos.iloc[0]
+        ahly_name = ahly_p["player"]
+        ahly_age  = int(ahly_p["age"]) if pd.notna(ahly_p["age"]) else "–"
+        ahly_mv   = ahly_p.get("market_value_m")
+        ahly_mv_str = f"€{ahly_mv:.2f}m" if pd.notna(ahly_mv) else "–"
+
+        target_score = float(r["adjusted_scouting_score"]) if pd.notna(r["adjusted_scouting_score"]) else 0
+        if target_score >= 70:
+            verdict_txt   = "POTENTIAL UPGRADE"
+            verdict_color = GREEN
+        elif target_score >= 50:
+            verdict_txt   = "SIMILAR LEVEL"
+            verdict_color = AMBER
         else:
-            vbadge = html.Span()
-        comp = html.Div([
-            html.P(f"vs {ah['player']}", style={"color": COLOR_MUTED, "fontSize": "11px",
-                                                  "marginBottom": "6px"}),
-            html.Table([
-                html.Thead(html.Tr([
-                    html.Th("Stat", style={"padding": "5px 8px", "color": COLOR_MUTED,
-                                           "fontSize": "10px", "background": COLOR_BORDER}),
-                    html.Th(ah["player"].split()[0],
-                            style={"padding": "5px 8px", "color": COLOR_MUTED,
-                                   "fontSize": "10px", "background": COLOR_BORDER,
-                                   "textAlign": "center"}),
-                    html.Th("Target", style={"padding": "5px 8px", "color": COLOR_MUTED,
-                                              "fontSize": "10px", "background": COLOR_BORDER,
-                                              "textAlign": "center"}),
-                ])),
-                html.Tbody(comp_rows),
-            ], style={"width": "100%", "borderCollapse": "collapse"}),
-            vbadge,
-        ])
+            verdict_txt   = "BELOW THRESHOLD"
+            verdict_color = RED
+
+        comp_rows = []
+        for lbl, col in [("Score", "adjusted_scouting_score"),
+                          ("Age",   "age"),
+                          ("Value", "market_value_m")]:
+            tgt_val = r.get(col)
+            ahly_val = ahly_p.get(col)
+            if col == "market_value_m":
+                tgt_str  = f"€{tgt_val:.2f}m"  if pd.notna(tgt_val)  else "–"
+                ahly_str = f"€{ahly_val:.2f}m" if pd.notna(ahly_val) else "–"
+            elif col == "adjusted_scouting_score":
+                tgt_str  = f"{tgt_val:.1f}"  if pd.notna(tgt_val)  else "–"
+                ahly_str = "N/A (no Big 5 data)"
+            else:
+                tgt_str  = str(int(tgt_val))  if pd.notna(tgt_val)  else "–"
+                ahly_str = str(int(ahly_val)) if pd.notna(ahly_val) else "–"
+            comp_rows.append({"Metric": lbl, "Target": tgt_str, "Al Ahly": ahly_str})
+
+        comp_tbl = dash_table.DataTable(
+            data=comp_rows,
+            columns=[{"name": c, "id": c} for c in ["Metric", "Target", "Al Ahly"]],
+            style_header=TBL_HEADER,
+            style_cell={**TBL_CELL, "fontSize": "12px", "textAlign": "center"},
+        )
+        vs_panel = html.Div([
+            html.H6(f"{player_name} vs {ahly_name}",
+                    style={"color": TEXT, "fontWeight": "600",
+                           "fontFamily": FONT, "marginBottom": "8px"}),
+            comp_tbl,
+            html.Div(style={"height": "10px"}),
+            html.Div([
+                badge(verdict_txt, verdict_color, verdict_color + "22"),
+            ], style={"textAlign": "center"}),
+        ], style=CARD)
+    else:
+        vs_panel = html.Div([
+            html.H6(f"vs Al Ahly", style={"color": TEXT, "fontWeight": "600",
+                                           "fontFamily": FONT, "marginBottom": "8px"}),
+            html.P(f"No current Al Ahly player at {pos}.",
+                   style={"color": TEXT_MUTED, "fontSize": "12px", "fontFamily": FONT}),
+            html.P("This would be a new addition to the squad.",
+                   style={"color": TEXT_MUTED, "fontSize": "12px", "fontFamily": FONT}),
+        ], style=CARD)
 
     row1 = dbc.Row([
-        dbc.Col([html.Div([
-            html.H6("Scouting Stats",
-                    style={**HDR, "fontSize": "12px", "marginBottom": "10px"}),
-            *bars,
-        ], style=CARD_STYLE)], md=4),
-        dbc.Col([html.Div([
-            html.H6(f"Radar — {pos}",
-                    style={**HDR, "fontSize": "12px", "marginBottom": "6px"}),
-            dcc.Graph(figure=radar_fig, config={"displayModeBar": False}),
-        ], style=CARD_STYLE)], md=4),
-        dbc.Col([html.Div([
-            html.H6("vs Al Ahly",
-                    style={**HDR, "fontSize": "12px", "marginBottom": "6px"}),
-            comp,
-        ], style=CARD_STYLE)], md=4),
-    ])
+        dbc.Col(stat_panel,  md=4),
+        dbc.Col(radar_panel, md=4),
+        dbc.Col(vs_panel,    md=4),
+    ], className="g-3", style={"marginBottom": "16px"})
 
     # Similar players
-    sim = get_similar_players(player_name, DF, MATRICES, n=8, target_leagues_only=True)
-    if len(sim) == 0:
-        sim_content = html.P("No similar players found in target leagues.",
-                             style={"color": COLOR_MUTED})
+    try:
+        sim_df = get_similar_players(player_name, DF, MATRICES, n=8,
+                                     target_leagues_only=True)
+    except Exception:
+        sim_df = pd.DataFrame()
+
+    if sim_df.empty:
+        sim_section = html.P("No similar players found.",
+                             style={"color": TEXT_MUTED, "fontFamily": FONT})
     else:
-        sdata = []
-        for _, sr in sim.iterrows():
-            sdata.append({
-                "Player": sr["player"],
-                "Club":   sr.get("team", ""),
-                "League": sr.get("league_clean", ""),
-                "Age":    int(sr["age"]) if pd.notna(sr.get("age")) else "",
-                "MV":     fmt_mv(sr.get("market_value_m")),
-                "Sim%":   f"{sr['similarity_pct']:.0f}%",
-                "Adj":    f"{sr['adjusted_scouting_score']:.0f}",
-                "Status": sr.get("valuation_status", ""),
+        sim_data = []
+        for _, sr in sim_df.iterrows():
+            smv = sr.get("market_value_m")
+            sim_data.append({
+                "★":         "☆",
+                "Player":    sr["player"],
+                "Club":      sr.get("team", ""),
+                "League":    sr.get("league_clean", ""),
+                "Age":       int(sr["age"]) if pd.notna(sr["age"]) else "–",
+                "MV (€m)":   f"€{smv:.2f}m" if pd.notna(smv) else "–",
+                "Sim%":      f"{sr['similarity_pct']:.0f}%",
+                "Score":     round(float(sr["adjusted_scouting_score"]), 1) if pd.notna(sr.get("adjusted_scouting_score")) else "–",
+                "Status":    sr.get("valuation_status", ""),
             })
-        sim_content = dash_table.DataTable(
-            data=sdata,
-            columns=[{"name": c, "id": c}
-                     for c in ["Player", "Club", "League", "Age", "MV", "Sim%", "Adj", "Status"]],
-            style_table={"overflowX": "auto"},
-            style_header={"background": COLOR_BORDER, "color": COLOR_TEXT,
-                           "fontWeight": "700", "border": "none", "fontSize": "11px"},
-            style_cell={"background": COLOR_CARD, "color": COLOR_TEXT,
-                        "border": f"1px solid {COLOR_BORDER}",
-                        "padding": "7px 10px", "fontSize": "11px"},
+        sim_section = dash_table.DataTable(
+            data=sim_data,
+            columns=[{"name": c, "id": c} for c in
+                     ["★", "Player", "Club", "League", "Age", "MV (€m)", "Sim%", "Score", "Status"]],
+            style_header=TBL_HEADER,
+            style_cell={**TBL_CELL, "fontSize": "12px", "textAlign": "left"},
+            style_cell_conditional=[
+                {"if": {"column_id": "★"}, "width": "28px", "textAlign": "center",
+                 "color": AMBER, "cursor": "pointer"},
+                {"if": {"column_id": "Sim%"}, "textAlign": "center", "fontWeight": "700"},
+            ],
             style_data_conditional=[
-                {"if": {"row_index": "odd"}, "background": "#111111"},
-                {"if": {"column_id": "Status", "filter_query": '{Status} = "Undervalued"'},
-                 "color": COLOR_SUCCESS},
+                {"if": {"row_index": "odd"}, "background": BG_CARD2},
+                {"if": {"filter_query": '{Status} = "Undervalued"'}, "color": GREEN},
             ],
         )
 
     row2 = html.Div([
-        html.H5(f"Most Similar {pos} Players (Target Leagues)",
-                style={**HDR, "marginBottom": "10px"}),
-        sim_content,
-    ], style=CARD_STYLE)
+        html.H6("Most Similar Players",
+                style={"color": TEXT, "fontWeight": "600",
+                       "fontFamily": FONT, "marginBottom": "2px"}),
+        html.Div(f"Same position ({pos}) · Target leagues · click ★ to shortlist",
+                 style={"color": TEXT_MUTED, "fontSize": "11px",
+                        "fontFamily": FONT, "marginBottom": "10px"}),
+        sim_section,
+    ], style=CARD)
 
-    return html.Div([hdr, row1, row2])
+    return html.Div([header, row1, row2])
 
-
-# Tab4: mini profile
-@app.callback(Output("t4-mini", "children"), Input("t4-player", "value"))
-def t4_mini(name):
-    if not name:
-        return html.Span()
-    mask = DF["player"] == name
-    if not mask.any():
-        return html.Span()
-    r = DF[mask].iloc[0]
-    return html.Div([
-        dbc.Row([
-            dbc.Col(html.H6(r["player"], style={"color": COLOR_TEXT, "margin": "0", "fontWeight": "700"})),
-            dbc.Col(html.Span(fmt_mv(r.get("market_value_m")),
-                              style={"color": "#5C9FE8", "fontWeight": "600", "float": "right"})),
-        ]),
-        html.P(f"{r.get('position_group', '')} • {r.get('team', '')} • "
-               f"Age {int(r['age']) if pd.notna(r.get('age')) else '?'} • "
-               f"Adj: {r.get('adjusted_scouting_score', 0):.0f}",
-               style={"color": COLOR_MUTED, "fontSize": "12px", "margin": "4px 0 0"}),
-    ], style={"background": COLOR_DARK, "padding": "10px", "borderRadius": "6px",
-              "border": f"1px solid {COLOR_BORDER}", "marginTop": "6px"})
-
-
-# Tab4: find replacements
+# Tab 3 — add/remove from shortlist via profile button
 @app.callback(
-    Output("t4-res", "children"),
-    Input("t4-find", "n_clicks"),
-    State("t4-player", "value"),
-    State("t4-budget", "value"),
-    State("t4-age", "value"),
-    State("t4-diff", "value"),
-    State("t4-tgt", "value"),
+    Output("shortlist-store", "data", allow_duplicate=True),
+    Input("t3-shortlist-btn", "n_clicks"),
+    [State("selected-player",   "data"),
+     State("shortlist-store",   "data")],
     prevent_initial_call=True,
 )
-def t4_find(n, name, budget, max_age, diff, tgt):
-    if not n or not name:
-        return html.P("Select a player first.",
-                      style={"color": COLOR_MUTED, "textAlign": "center", "padding": "40px 0"})
+def profile_shortlist_toggle(n, player_name, shortlist):
+    if not n or not player_name:
+        return no_update
+    shortlist = list(shortlist or [])
+    names = [p["player"] for p in shortlist]
+    if player_name in names:
+        return [p for p in shortlist if p["player"] != player_name]
+    if len(shortlist) >= 10:
+        return no_update
+    pr = DF[DF["player"] == player_name]
+    if pr.empty:
+        return no_update
+    r = pr.iloc[0]
+    shortlist.append({
+        "player":               player_name,
+        "team":                 str(r.get("team", "")),
+        "league":               str(r.get("league_clean", "")),
+        "age":                  float(r["age"]) if pd.notna(r["age"]) else 0,
+        "position_group":       str(r.get("position_group", "")),
+        "market_value_m":       float(r["market_value_m"]) if pd.notna(r["market_value_m"]) else 0,
+        "adjusted_scouting_score": float(r["adjusted_scouting_score"]) if pd.notna(r["adjusted_scouting_score"]) else 0,
+        "valuation_status":     str(r.get("valuation_status", "")),
+        "contract_expiring":    bool(r.get("contract_expiring", False)),
+    })
+    return shortlist
 
-    results = get_similar_players(
-        name, DF, MATRICES, n=15,
-        max_market_value_m=budget,
-        max_age=max_age,
-        different_league=bool(diff),
-        target_leagues_only=bool(tgt),
-    )
+# Tab 4 — render shortlist
+@app.callback(
+    [Output("t4-table-wrap",  "children"),
+     Output("t4-count",       "children"),
+     Output("tab-shortlist-label", "label")],
+    Input("shortlist-store",  "data"),
+)
+def render_shortlist(shortlist):
+    shortlist = shortlist or []
+    n = len(shortlist)
+    count_txt = f"{n} player{'s' if n != 1 else ''} · max 10"
+    tab_label = f"Shortlist ({n})"
 
-    mask = DF["player"] == name
-    ref = DF[mask].iloc[0] if mask.any() else None
-    ref_mv = ref.get("market_value_m", np.nan) if ref is not None else np.nan
-    ref_pos = ref.get("position_group", "") if ref is not None else ""
+    if n == 0:
+        empty = html.Div([
+            html.Div("⭐", style={"fontSize": "40px", "textAlign": "center",
+                                   "marginBottom": "12px"}),
+            html.P("No players added yet.",
+                   style={"color": TEXT_MUTED, "textAlign": "center",
+                          "fontFamily": FONT, "fontWeight": "600"}),
+            html.P("Click ☆ on any player in Player Discovery to add them here.",
+                   style={"color": TEXT_MUTED, "textAlign": "center",
+                          "fontSize": "13px", "fontFamily": FONT}),
+        ], style={"padding": "40px 0"})
+        return empty, count_txt, tab_label
 
-    if len(results) == 0:
-        return html.P(f"No replacements found for {name} within budget.",
-                      style={"color": COLOR_MUTED, "textAlign": "center", "padding": "40px 0"})
-
-    tdata = []
-    for _, r in results.iterrows():
-        cmv = r.get("market_value_m", np.nan)
-        if pd.notna(ref_mv) and pd.notna(cmv):
-            cheaper = ref_mv - cmv
-            cs = (f"€{cheaper:.1f}m cheaper" if cheaper > 0
-                  else f"€{abs(cheaper):.1f}m more")
-        else:
-            cs = "-"
-        tdata.append({
-            "Player":     r["player"],
-            "Club":       r.get("team", ""),
-            "League":     r.get("league_clean", ""),
-            "Age":        int(r["age"]) if pd.notna(r.get("age")) else "",
-            "MV":         fmt_mv(cmv),
-            "Sim%":       f"{r['similarity_pct']:.0f}%",
-            "Adj":        f"{r['adjusted_scouting_score']:.0f}",
-            "Cheaper By": cs,
-            "Status":     r.get("valuation_status", ""),
-            "Ctrt":       "⚡" if r.get("contract_expiring") else "",
+    rows = []
+    for p in shortlist:
+        mv = p.get("market_value_m")
+        rows.append({
+            "Remove":   "✕",
+            "Player":   p["player"],
+            "Club":     p.get("team", ""),
+            "League":   p.get("league", ""),
+            "Age":      int(p["age"]) if p.get("age") else "–",
+            "Pos":      p.get("position_group", ""),
+            "MV (€m)":  f"€{mv:.2f}m" if mv and mv > 0 else "–",
+            "Score":    round(p.get("adjusted_scouting_score", 0), 1),
+            "Status":   p.get("valuation_status", ""),
+            "Contract": "⚡" if p.get("contract_expiring") else "",
         })
 
     tbl = dash_table.DataTable(
-        data=tdata,
-        columns=[{"name": c, "id": c}
-                 for c in ["Player", "Club", "League", "Age", "MV",
-                            "Sim%", "Adj", "Cheaper By", "Status", "Ctrt"]],
-        style_table={"overflowX": "auto"},
-        style_header={"background": COLOR_BORDER, "color": COLOR_TEXT,
-                       "fontWeight": "700", "border": "none", "fontSize": "11px"},
-        style_cell={"background": COLOR_CARD, "color": COLOR_TEXT,
-                    "border": f"1px solid {COLOR_BORDER}",
-                    "padding": "7px 10px", "fontSize": "11px"},
+        id="t4-main-table",
+        data=rows,
+        columns=[{"name": c, "id": c} for c in
+                 ["Remove", "Player", "Club", "League", "Age", "Pos",
+                  "MV (€m)", "Score", "Status", "Contract"]],
+        row_selectable="multi",
+        selected_rows=[],
+        style_header=TBL_HEADER,
+        style_cell={**TBL_CELL, "textAlign": "left"},
+        style_cell_conditional=[
+            {"if": {"column_id": "Remove"},   "width": "40px", "textAlign": "center",
+             "color": RED, "cursor": "pointer", "fontWeight": "700"},
+            {"if": {"column_id": "Contract"}, "width": "40px", "textAlign": "center",
+             "color": AMBER},
+        ],
         style_data_conditional=[
-            {"if": {"row_index": "odd"}, "background": "#111111"},
-            {"if": {"column_id": "Status", "filter_query": '{Status} = "Undervalued"'},
-             "color": COLOR_SUCCESS},
-            {"if": {"column_id": "Ctrt"}, "color": COLOR_WARNING},
+            {"if": {"row_index": "odd"}, "background": BG_CARD2},
+            {"if": {"filter_query": '{Status} = "Undervalued"'}, "color": GREEN},
+        ],
+        active_cell=None,
+    )
+    return tbl, count_txt, tab_label
+
+# Tab 4 — remove from shortlist
+@app.callback(
+    Output("shortlist-store", "data", allow_duplicate=True),
+    Input("t4-main-table", "active_cell"),
+    [State("t4-main-table", "data"),
+     State("shortlist-store", "data")],
+    prevent_initial_call=True,
+)
+def remove_from_shortlist(active_cell, table_data, shortlist):
+    if not active_cell or not table_data:
+        return no_update
+    col = active_cell.get("column_id", "")
+    if col != "Remove":
+        return no_update
+    row  = table_data[active_cell["row"]]
+    name = row.get("Player", "")
+    return [p for p in (shortlist or []) if p["player"] != name]
+
+# Tab 4 — clear all shortlist
+@app.callback(
+    Output("shortlist-store", "data", allow_duplicate=True),
+    Input("t4-clear", "n_clicks"),
+    prevent_initial_call=True,
+)
+def clear_shortlist(n):
+    if not n:
+        return no_update
+    return []
+
+# Tab 4 — comparison radar when 2+ rows selected
+@app.callback(
+    Output("t4-comparison-panel", "children"),
+    Input("t4-main-table", "selected_rows"),
+    State("t4-main-table", "data"),
+    prevent_initial_call=True,
+)
+def update_comparison(selected_rows, table_data):
+    if not selected_rows or len(selected_rows) < 2:
+        return html.P("Select 2–4 players above (checkboxes) to compare them.",
+                      style={"color": TEXT_MUTED, "textAlign": "center",
+                             "padding": "20px 0", "fontFamily": FONT})
+    if len(selected_rows) > 4:
+        selected_rows = selected_rows[:4]
+
+    players = [table_data[i]["Player"] for i in selected_rows]
+    pos_groups = [table_data[i].get("Pos", "") for i in selected_rows]
+
+    # Use first player's pos for radar metrics
+    pos = pos_groups[0] if pos_groups else "W"
+    metrics = RADAR_METRICS.get(pos, [])
+
+    COLORS = [RED, BLUE, GREEN, AMBER]
+    fig = go.Figure()
+    comp_data = {lbl: [] for lbl, _ in metrics}
+
+    for i, pname in enumerate(players):
+        pr = DF[DF["player"] == pname]
+        if pr.empty:
+            continue
+        r = pr.iloc[0]
+        pos_df = DF[DF["position_group"] == r.get("position_group", pos)]
+        vals = []
+        for lbl, col in metrics:
+            if col not in DF.columns:
+                vals.append(0)
+                comp_data[lbl].append("–")
+                continue
+            v = pd.to_numeric(r[col], errors="coerce")
+            pct = pct_rank(v, pos_df[col])
+            vals.append(pct)
+            comp_data[lbl].append(f"{pct:.0f}%")
+
+        if vals:
+            lbls = [lbl for lbl, _ in metrics]
+            fig.add_trace(go.Scatterpolar(
+                r=vals + [vals[0]],
+                theta=lbls + [lbls[0]],
+                fill="toself",
+                fillcolor=COLORS[i % len(COLORS)] + "33",
+                line=dict(color=COLORS[i % len(COLORS)], width=2),
+                name=pname,
+            ))
+
+    fig.update_layout(
+        **CHART_DEFAULTS,
+        polar=dict(
+            bgcolor=BG_CARD2,
+            radialaxis=dict(visible=True, range=[0, 100],
+                            tickfont=dict(size=8, color=TEXT_MUTED),
+                            gridcolor=BORDER),
+            angularaxis=dict(tickfont=dict(size=10, color=TEXT)),
+        ),
+        showlegend=True,
+        legend=dict(orientation="h", y=-0.15, font=dict(size=10, color=TEXT)),
+        height=350,
+    )
+
+    comp_rows = []
+    for lbl, _ in metrics:
+        row_d = {"Metric": lbl}
+        for j, pname in enumerate(players):
+            row_d[pname[:20]] = comp_data[lbl][j] if j < len(comp_data[lbl]) else "–"
+        comp_rows.append(row_d)
+
+    col_names = ["Metric"] + [p[:20] for p in players]
+    comp_tbl = dash_table.DataTable(
+        data=comp_rows,
+        columns=[{"name": c, "id": c} for c in col_names],
+        style_header=TBL_HEADER,
+        style_cell={**TBL_CELL, "textAlign": "center", "fontSize": "11px"},
+    )
+
+    return html.Div([
+        html.H6("Player Comparison",
+                style={**H, "fontSize": "14px", "marginBottom": "12px"}),
+        dbc.Row([
+            dbc.Col(dcc.Graph(figure=fig, config={"displayModeBar": False}), md=6),
+            dbc.Col(comp_tbl, md=6),
+        ]),
+    ])
+
+# Tab 5 — slider labels
+@app.callback(
+    Output("t5-bgt-lbl", "children"),
+    Input("t5-budget", "value"),
+)
+def update_t5_budget_lbl(v):
+    return f"Target budget: €{v}m"
+
+# Tab 5 — reference player mini card
+@app.callback(
+    Output("t5-mini", "children"),
+    Input("t5-player", "value"),
+)
+def update_t5_mini(player_name):
+    if not player_name:
+        return html.Div()
+    pr = DF[DF["player"] == player_name]
+    if pr.empty:
+        return html.Div()
+    r  = pr.iloc[0]
+    mv = r.get("market_value_m")
+    return html.Div([
+        dbc.Row([
+            dbc.Col(html.Div([
+                html.Div(player_name, style={"color": TEXT, "fontWeight": "700",
+                                              "fontSize": "14px", "fontFamily": FONT}),
+                html.Div(f"{r.get('team','')}  ·  {r.get('position_group','')}  ·  Age {int(r['age']) if pd.notna(r['age']) else '–'}",
+                         style={"color": TEXT_MUTED, "fontSize": "12px", "fontFamily": FONT}),
+            ])),
+            dbc.Col([
+                html.Div(f"€{mv:.2f}m" if pd.notna(mv) else "–",
+                         style={"color": BLUE, "fontWeight": "700",
+                                "fontSize": "15px", "fontFamily": FONT}),
+                html.Div(f"Score: {r.get('adjusted_scouting_score',0):.1f}",
+                         style={"color": TEXT_MUTED, "fontSize": "11px", "fontFamily": FONT}),
+            ], width="auto"),
+        ], align="center"),
+    ], style={**CARD, "background": BG_CARD2})
+
+# Tab 5 — find replacements
+@app.callback(
+    Output("t5-results", "children"),
+    Input("t5-find", "n_clicks"),
+    [State("t5-player",      "value"),
+     State("t5-budget",      "value"),
+     State("t5-age",         "value"),
+     State("t5-diff-league", "value"),
+     State("t5-tgt-leagues", "value")],
+    prevent_initial_call=True,
+)
+def find_replacements(n, player_name, budget, max_age, diff_league, tgt_only):
+    if not n or not player_name:
+        return html.P("Select a reference player and click Find Replacements.",
+                      style={"color": TEXT_MUTED, "textAlign": "center",
+                             "padding": "40px 0", "fontFamily": FONT})
+
+    pr = DF[DF["player"] == player_name]
+    if pr.empty:
+        return html.P("Player not found.",
+                      style={"color": TEXT_MUTED, "fontFamily": FONT})
+    ref = pr.iloc[0]
+    ref_mv    = ref.get("market_value_m")
+    ref_pos   = str(ref.get("position_group", ""))
+    ref_score = float(ref.get("adjusted_scouting_score", 0))
+
+    try:
+        res_df = get_similar_players(
+            player_name, DF, MATRICES, n=20,
+            max_market_value_m=budget,
+            max_age=max_age,
+            different_league=bool(diff_league),
+            target_leagues_only=bool(tgt_only),
+        )
+    except Exception as e:
+        return html.P(f"Error: {e}", style={"color": RED, "fontFamily": FONT})
+
+    # Enforce same position
+    if not res_df.empty and "position_group" in res_df.columns:
+        res_df = res_df[res_df["position_group"] == ref_pos]
+
+    if res_df.empty:
+        return html.Div([
+            html.H6(f"Replacements for {player_name}",
+                    style={**H, "marginBottom": "8px"}),
+            html.P("No replacements found with current criteria.",
+                   style={"color": TEXT_MUTED, "fontFamily": FONT}),
+        ])
+
+    rows = []
+    for _, sr in res_df.iterrows():
+        smv = sr.get("market_value_m")
+        cheaper = (ref_mv - smv) if (pd.notna(ref_mv) and pd.notna(smv)) else None
+        if cheaper is None:
+            cheaper_str = "–"
+        elif cheaper >= 0:
+            cheaper_str = f"€{cheaper:.2f}m cheaper"
+        else:
+            cheaper_str = f"€{abs(cheaper):.2f}m more"
+
+        sim_pct = float(sr.get("similarity_pct", 0))
+        rows.append({
+            "★":          "☆",
+            "Player":     sr["player"],
+            "Club":       sr.get("team", ""),
+            "League":     sr.get("league_clean", ""),
+            "Age":        int(sr["age"]) if pd.notna(sr["age"]) else "–",
+            "MV (€m)":    f"€{smv:.2f}m" if pd.notna(smv) else "–",
+            "Sim%":       f"{sim_pct:.0f}%",
+            "Score":      round(float(sr.get("adjusted_scouting_score", 0)), 1),
+            "Cheaper By": cheaper_str,
+            "Status":     sr.get("valuation_status", ""),
+            "Exp":        "⚡" if sr.get("contract_expiring") else "",
+        })
+
+    tbl = dash_table.DataTable(
+        data=rows,
+        columns=[{"name": c, "id": c} for c in
+                 ["★", "Player", "Club", "League", "Age", "MV (€m)",
+                  "Sim%", "Score", "Cheaper By", "Status", "Exp"]],
+        style_header=TBL_HEADER,
+        style_cell={**TBL_CELL, "textAlign": "left", "fontSize": "12px"},
+        style_cell_conditional=[
+            {"if": {"column_id": "★"},   "width": "28px", "textAlign": "center",
+             "color": AMBER},
+            {"if": {"column_id": "Exp"}, "width": "28px", "textAlign": "center",
+             "color": AMBER},
+        ],
+        style_data_conditional=[
+            {"if": {"row_index": "odd"}, "background": BG_CARD2},
+            {"if": {"filter_query": '{Sim%} contains "8" && {Sim%} != "–"'},
+             "background": GREEN + "11"},
+            {"if": {"filter_query": '{Status} = "Undervalued"'}, "color": GREEN},
+            {"if": {"filter_query": '{Cheaper By} contains "cheaper"'}, "color": GREEN},
         ],
     )
+
     return html.Div([
-        html.H5(f"Replacements for {name}", style={**HDR, "marginBottom": "4px"}),
-        html.P(f"Same position ({ref_pos}) • Budget ≤ €{budget:.1f}m • "
-               f"Age ≤ {max_age} • {len(results)} found",
-               style={"color": COLOR_MUTED, "fontSize": "12px", "marginBottom": "10px"}),
+        html.H6(f"Replacements for {player_name}",
+                style={**H, "fontSize": "14px", "marginBottom": "4px"}),
+        html.Div(f"Same position ({ref_pos})  ·  Budget ≤€{budget}m  ·  Age ≤{max_age}  ·  {len(rows)} found",
+                 style={"color": TEXT_MUTED, "fontSize": "12px",
+                        "marginBottom": "12px", "fontFamily": FONT}),
         tbl,
     ])
 
-
-# Tab5: charts
+# Tab 6 — best value chart
 @app.callback(
-    Output("t5-bv", "figure"),
-    Output("t5-vg", "figure"),
-    Output("t5-sc", "figure"),
-    Input("tabs", "value"),
+    Output("t6-best-value", "figure"),
+    Input("main-tabs", "value"),
 )
-def t5_charts(tab):
-    empty = go.Figure()
-    empty.update_layout(paper_bgcolor=COLOR_CARD, plot_bgcolor=COLOR_CARD,
-                        font=dict(color=COLOR_TEXT))
-    if tab != "t5":
-        return empty, empty, empty
+def update_best_value(tab):
+    df = DF[DF["market_value_m"] <= 3.0].copy()
+    df = df.sort_values("adjusted_scouting_score", ascending=False).head(15)
+    if df.empty:
+        return go.Figure()
 
-    pc = {"CB": "#5C9FE8", "FB": "#00C853", "DM": "#FFB300",
-          "CM": "#FF7043", "AM": "#AB47BC", "W": COLOR_PRIMARY, "ST": "#26C6DA"}
+    pos_colors = {"CB": BLUE, "FB": "#00BCD4", "DM": "#9C27B0",
+                  "CM": AMBER, "AM": "#FF5722", "W": GREEN, "ST": RED}
+    colors_list = [pos_colors.get(p, TEXT_MUTED) for p in df["position_group"]]
 
-    # Chart 1: best value under 3m
-    bv = DF[DF["market_value_m"] <= 3.0].nlargest(15, "adjusted_scouting_score").copy()
-    fig1 = go.Figure()
-    for p in bv["position_group"].unique():
-        sub = bv[bv["position_group"] == p]
-        fig1.add_trace(go.Bar(
-            x=sub["adjusted_scouting_score"], y=sub["player"],
-            orientation="h", name=p, marker_color=pc.get(p, COLOR_MUTED),
-            text=[f"{r2.team} | {fmt_mv(r2.market_value_m)}" for _, r2 in sub.iterrows()],
-            textposition="outside",
-            hovertemplate="<b>%{y}</b><br>Score: %{x}<extra></extra>",
-        ))
-    fig1.update_layout(
-        paper_bgcolor=COLOR_CARD, plot_bgcolor=COLOR_CARD,
-        font=dict(color=COLOR_TEXT, size=11),
-        xaxis=dict(color=COLOR_MUTED, gridcolor=COLOR_BORDER, range=[0, 108]),
-        yaxis=dict(color=COLOR_TEXT, autorange="reversed"),
-        barmode="overlay", showlegend=True,
-        legend=dict(bgcolor=COLOR_CARD, bordercolor=COLOR_BORDER, font=dict(size=10)),
-        margin=dict(l=10, r=100, t=10, b=30), height=400,
+    fig = go.Figure(go.Bar(
+        x=df["adjusted_scouting_score"],
+        y=df["player"],
+        orientation="h",
+        marker=dict(color=colors_list),
+        hovertemplate="%{y}<br>Score: %{x:.1f}<extra></extra>",
+    ))
+    fig.update_layout(
+        **CHART_DEFAULTS,
+        title=dict(text="Top 15 · Sorted by Score", font=dict(size=12)),
+        xaxis=dict(title="Adjusted Score", gridcolor=BORDER),
+        yaxis=dict(autorange="reversed", tickfont=dict(size=10)),
+        height=330,
     )
+    return fig
 
-    # Chart 2: value gap by league
-    vg = DF[DF["value_gap_pct"].notna() & DF["league_clean"].notna()].copy()
-    fig2 = go.Figure()
-    for lg in sorted(vg["league_clean"].unique()):
-        sub = vg[vg["league_clean"] == lg]["value_gap_pct"]
-        col = COLOR_SUCCESS if sub.median() < 0 else COLOR_PRIMARY
-        fig2.add_trace(go.Box(
-            y=sub, name=lg[:14], marker_color=col,
-            line_color=col, fillcolor=f"{col}22",
-        ))
-    fig2.update_layout(
-        paper_bgcolor=COLOR_CARD, plot_bgcolor=COLOR_CARD,
-        font=dict(color=COLOR_TEXT, size=11),
-        yaxis=dict(color=COLOR_MUTED, gridcolor=COLOR_BORDER, title="Value Gap %"),
-        xaxis=dict(color=COLOR_TEXT),
-        showlegend=False, margin=dict(l=50, r=10, t=10, b=30), height=400,
-    )
-
-    # Chart 3: age-value scatter
-    sc = DF[(DF["market_value_m"] <= 5) & DF["market_value_m"].notna()].copy()
-    cmap = {"Undervalued": COLOR_SUCCESS, "Fair Value": COLOR_MUTED,
-            "Overvalued": COLOR_PRIMARY, "Unknown": COLOR_BORDER}
-    fig3 = go.Figure()
-    fig3.add_shape(type="rect", x0=22, x1=27, y0=60, y1=100,
-                   fillcolor="rgba(0,200,83,0.08)",
-                   line=dict(color=COLOR_SUCCESS, width=1, dash="dot"))
-    fig3.add_annotation(x=24.5, y=97, text="Al Ahly Target Zone",
-                        font=dict(color=COLOR_SUCCESS, size=10), showarrow=False)
-    for st in ["Undervalued", "Fair Value", "Overvalued"]:
-        sub = sc[sc["valuation_status"] == st]
-        if len(sub) == 0:
-            continue
-        fig3.add_trace(go.Scatter(
-            x=sub["age"], y=sub["adjusted_scouting_score"],
-            mode="markers", name=st,
-            marker=dict(size=sub["market_value_m"].clip(0.5, 5) * 3,
-                        color=cmap[st], opacity=0.7,
-                        line=dict(width=0.5, color=COLOR_BORDER)),
-            text=sub["player"] + "<br>" + sub["team"] + "<br>" + sub["market_value_m"].apply(fmt_mv),
-            hovertemplate="<b>%{text}</b><br>Age: %{x}<br>Score: %{y}<extra></extra>",
-        ))
-    fig3.update_layout(
-        paper_bgcolor=COLOR_CARD, plot_bgcolor=COLOR_CARD,
-        font=dict(color=COLOR_TEXT, size=11),
-        xaxis=dict(color=COLOR_MUTED, gridcolor=COLOR_BORDER, title="Age", range=[15, 36]),
-        yaxis=dict(color=COLOR_MUTED, gridcolor=COLOR_BORDER, title="Adj Score", range=[0, 105]),
-        legend=dict(bgcolor=COLOR_CARD, bordercolor=COLOR_BORDER, font=dict(size=10)),
-        margin=dict(l=50, r=10, t=10, b=30), height=400,
-    )
-    return fig1, fig2, fig3
-
-
-# Tab5: expiring contracts table
+# Tab 6 — undervalued by league
 @app.callback(
-    Output("t5-exp-tbl", "children"),
-    Input("t5-pos-flt", "value"),
-    Input("tabs", "value"),
+    Output("t6-undervalued", "figure"),
+    Input("main-tabs", "value"),
 )
-def t5_exp(pos_f, tab):
-    if tab != "t5":
-        return html.Span()
-    exp = DF[DF["contract_expiring"] == True].copy()
-    if pos_f and pos_f != "ALL":
-        exp = exp[exp["position_group"] == pos_f]
-    exp = exp.sort_values("adjusted_scouting_score", ascending=False).head(20)
-    if len(exp) == 0:
-        return html.P("No expiring contracts found.", style={"color": COLOR_MUTED})
-    tdata = [{
-        "Player": r["player"], "Club": r.get("team", ""),
-        "League": r.get("league_clean", ""),
-        "Age":    int(r["age"]) if pd.notna(r.get("age")) else "",
-        "Pos":    r["position_group"],
-        "MV":     fmt_mv(r.get("market_value_m")),
-        "Adj":    f"{r['adjusted_scouting_score']:.0f}",
-        "Expiry": str(r.get("contract_expiry", ""))[:10],
-    } for _, r in exp.iterrows()]
+def update_undervalued(tab):
+    df = DF[DF["valuation_status"] == "Undervalued"].copy()
+    counts = df.groupby("league_clean").size().reset_index(name="count")
+    counts = counts.sort_values("count", ascending=False)
+    if counts.empty:
+        return go.Figure()
+
+    fig = go.Figure(go.Bar(
+        x=counts["league_clean"],
+        y=counts["count"],
+        marker=dict(color=GREEN, opacity=0.8),
+        hovertemplate="%{x}<br>Undervalued: %{y}<extra></extra>",
+    ))
+    fig.update_layout(
+        **CHART_DEFAULTS,
+        title=dict(text="Count of Undervalued Players", font=dict(size=12)),
+        xaxis=dict(title="", tickfont=dict(size=11)),
+        yaxis=dict(title="Players", gridcolor=BORDER),
+        height=330,
+    )
+    return fig
+
+# Tab 6 — expiry table
+@app.callback(
+    Output("t6-expiry-table", "children"),
+    [Input("main-tabs", "value"),
+     Input("t6-pos-filter", "value")],
+)
+def update_expiry_table(tab, pos_filter):
+    df = DF[DF["contract_expiring"] == True].copy()
+    if pos_filter and pos_filter != "ALL":
+        df = df[df["position_group"] == pos_filter]
+    df = df.sort_values("adjusted_scouting_score", ascending=False)
+
+    if df.empty:
+        return html.P("No expiring contracts found.",
+                      style={"color": TEXT_MUTED, "fontFamily": FONT})
+
+    rows = []
+    for _, r in df.head(25).iterrows():
+        mv = r.get("market_value_m")
+        rows.append({
+            "Player":  r["player"],
+            "Club":    r.get("team", ""),
+            "League":  r.get("league_clean", ""),
+            "Age":     int(r["age"]) if pd.notna(r["age"]) else "–",
+            "Pos":     r.get("position_group", ""),
+            "MV":      f"€{mv:.2f}m" if pd.notna(mv) else "–",
+            "Score":   round(float(r["adjusted_scouting_score"]), 1),
+            "Status":  "⚡ EXPIRING",
+        })
+
     return dash_table.DataTable(
-        data=tdata,
-        columns=[{"name": c, "id": c}
-                 for c in ["Player", "Club", "League", "Age", "Pos", "MV", "Adj", "Expiry"]],
-        style_table={"overflowX": "auto"},
-        style_header={"background": COLOR_BORDER, "color": COLOR_TEXT,
-                       "fontWeight": "700", "border": "none", "fontSize": "11px"},
-        style_cell={"background": COLOR_CARD, "color": COLOR_TEXT,
-                    "border": f"1px solid {COLOR_BORDER}",
-                    "padding": "6px 8px", "fontSize": "11px"},
-        style_data_conditional=[{"if": {"row_index": "odd"}, "background": "#111111"}],
+        data=rows,
+        columns=[{"name": c, "id": c} for c in
+                 ["Player", "Club", "League", "Age", "Pos", "MV", "Score", "Status"]],
+        style_header=TBL_HEADER,
+        style_cell={**TBL_CELL, "textAlign": "left", "fontSize": "11px",
+                    "padding": "6px 8px"},
+        style_data_conditional=[
+            {"if": {"row_index": "odd"}, "background": BG_CARD2},
+            {"if": {"column_id": "Status"}, "color": AMBER, "fontWeight": "700"},
+        ],
         page_size=10,
     )
 
+# Tab 6 — scatter chart
+@app.callback(
+    Output("t6-scatter", "figure"),
+    Input("main-tabs", "value"),
+)
+def update_scatter(tab):
+    df = DF[DF["market_value_m"] <= 5.0].copy()
+    df = df.dropna(subset=["age", "adjusted_scouting_score"])
+    if df.empty:
+        return go.Figure()
+
+    color_map = {"Undervalued": GREEN, "Fair Value": TEXT_MUTED,
+                 "Overvalued": RED, "Unknown": BORDER}
+
+    fig = go.Figure()
+
+    # Target zone rectangle
+    fig.add_shape(
+        type="rect", x0=22, x1=28, y0=60, y1=100,
+        fillcolor=GREEN + "18", line=dict(color=GREEN + "44", width=1),
+        layer="below",
+    )
+    fig.add_annotation(
+        x=25, y=98, text="Al Ahly Target Zone",
+        font=dict(color=GREEN, size=10, family=FONT),
+        showarrow=False, bgcolor=BG_CARD2 + "CC",
+    )
+
+    for status, color in color_map.items():
+        sub = df[df["valuation_status"] == status]
+        if sub.empty:
+            continue
+        fig.add_trace(go.Scatter(
+            x=sub["age"],
+            y=sub["adjusted_scouting_score"],
+            mode="markers",
+            marker=dict(
+                color=color,
+                size=(sub["market_value_m"].fillna(0.5) * 4).clip(4, 20),
+                opacity=0.7,
+                line=dict(width=0),
+            ),
+            name=status,
+            hovertemplate=(
+                "<b>%{customdata[0]}</b><br>"
+                "Age: %{x}<br>Score: %{y:.1f}<br>"
+                "MV: €%{customdata[1]:.2f}m<extra></extra>"
+            ),
+            customdata=list(zip(
+                sub["player"].fillna(""),
+                sub["market_value_m"].fillna(0),
+            )),
+        ))
+
+    fig.update_layout(
+        **CHART_DEFAULTS,
+        xaxis=dict(title="Age", gridcolor=BORDER, range=[16, 36]),
+        yaxis=dict(title="Adjusted Score", gridcolor=BORDER),
+        legend=dict(orientation="h", y=-0.15, font=dict(size=10)),
+        height=330,
+    )
+    return fig
+
+# ── Run ───────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     app.run(debug=True, port=8050)
