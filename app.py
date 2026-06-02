@@ -846,6 +846,88 @@ def build_tab5():
 
 # ── Tab 6: Market Intelligence ────────────────────────────────────────────────
 
+def build_scatter_fig():
+    """Build the Al Ahly Target Zone scatter chart. Called at layout time so the
+    graph has a real figure from the moment it enters the DOM — avoids the race
+    condition where the callback fires before the component exists."""
+    df = DF[(DF["market_value_m"] <= 5.0) & (DF["age"].between(18, 35))].copy()
+    df = df.dropna(subset=["age", "adjusted_scouting_score"])
+
+    DARK = "#1A1A1A"
+    GRID = "#2A2A2A"
+    pos_color_map = {
+        "CB": BLUE,       "FB": "#00BCD4", "DM": "#9C27B0",
+        "CM": AMBER,      "AM": "#FF5722", "W":  GREEN,    "ST": RED,
+    }
+
+    fig = go.Figure()
+
+    if not df.empty:
+        # Target zone highlight
+        fig.add_shape(
+            type="rect", x0=22, x1=28, y0=60, y1=105,
+            fillcolor="rgba(0,200,83,0.10)",
+            line=dict(color="rgba(0,200,83,0.40)", width=1),
+            layer="below",
+        )
+        fig.add_annotation(
+            x=25, y=102, text="Al Ahly Target Zone",
+            font=dict(color=GREEN, size=10, family=FONT),
+            showarrow=False,
+            bgcolor="rgba(34,34,34,0.80)",
+        )
+
+        for pos, color in pos_color_map.items():
+            sub = df[df["position_group"] == pos]
+            if sub.empty:
+                continue
+            fig.add_trace(go.Scatter(
+                x=sub["age"],
+                y=sub["adjusted_scouting_score"],
+                mode="markers",
+                marker=dict(
+                    color=color,
+                    size=(sub["market_value_m"].fillna(0.5) * 4).clip(4, 18),
+                    opacity=0.80,
+                    line=dict(width=0),
+                ),
+                name=pos,
+                hovertemplate=(
+                    "<b>%{customdata[0]}</b><br>"
+                    "%{customdata[1]}<br>"
+                    "Age: %{x:.0f}  ·  Score: %{y:.1f}<br>"
+                    "MV: €%{customdata[2]:.2f}m<extra></extra>"
+                ),
+                customdata=list(zip(
+                    sub["player"].fillna(""),
+                    sub["team"].fillna(""),
+                    sub["market_value_m"].fillna(0),
+                )),
+            ))
+
+    fig.update_layout(
+        paper_bgcolor=DARK,
+        plot_bgcolor=DARK,
+        font=dict(color=TEXT, family=FONT),
+        margin=dict(l=44, r=16, t=16, b=60),
+        xaxis=dict(
+            title="Age", gridcolor=GRID, zeroline=False,
+            range=[18, 36], color=TEXT, tickfont=dict(color=TEXT_MUTED),
+        ),
+        yaxis=dict(
+            title="Adjusted Score", gridcolor=GRID, zeroline=False,
+            color=TEXT, tickfont=dict(color=TEXT_MUTED),
+        ),
+        legend=dict(
+            orientation="h", y=-0.22,
+            font=dict(size=10, color=TEXT),
+            bgcolor="rgba(0,0,0,0)",
+        ),
+        height=330,
+    )
+    return fig
+
+
 def build_tab6():
     return html.Div([
         dbc.Row([
@@ -889,6 +971,7 @@ def build_tab6():
                        style={"color": TEXT_MUTED, "fontSize": "11px",
                               "marginBottom": "4px", "fontFamily": FONT}),
                 dcc.Graph(id="t6-scatter",
+                          figure=build_scatter_fig(),
                           config={"displayModeBar": False},
                           style={"height": "340px"}),
             ], style=CARD)], md=6),
@@ -1997,68 +2080,16 @@ def update_expiry_table(tab, pos_filter):
         page_size=10,
     )
 
-# Tab 6 — scatter chart
+# Tab 6 — scatter chart (callback kept for completeness; initial figure is built
+# inline in build_tab6() to avoid the dynamic-layout race condition)
 @app.callback(
     Output("t6-scatter", "figure"),
     Input("main-tabs", "value"),
 )
 def update_scatter(tab):
-    df = DF[DF["market_value_m"] <= 5.0].copy()
-    df = df.dropna(subset=["age", "adjusted_scouting_score"])
-    if df.empty:
-        return go.Figure()
-
-    pos_color_map = {"CB": BLUE, "FB": "#00BCD4", "DM": "#9C27B0",
-                     "CM": AMBER, "AM": "#FF5722", "W": GREEN, "ST": RED}
-
-    fig = go.Figure()
-
-    # Target zone rectangle
-    fig.add_shape(
-        type="rect", x0=22, x1=28, y0=60, y1=100,
-        fillcolor="rgba(0,200,83,0.09)", line=dict(color="rgba(0,200,83,0.27)", width=1),
-        layer="below",
-    )
-    fig.add_annotation(
-        x=25, y=98, text="Al Ahly Target Zone",
-        font=dict(color=GREEN, size=10, family=FONT),
-        showarrow=False, bgcolor=BG_CARD2 + "CC",
-    )
-
-    for pos, color in pos_color_map.items():
-        sub = df[df["position_group"] == pos]
-        if sub.empty:
-            continue
-        fig.add_trace(go.Scatter(
-            x=sub["age"],
-            y=sub["adjusted_scouting_score"],
-            mode="markers",
-            marker=dict(
-                color=color,
-                size=(sub["market_value_m"].fillna(0.5) * 4).clip(4, 20),
-                opacity=0.7,
-                line=dict(width=0),
-            ),
-            name=pos,
-            hovertemplate=(
-                "<b>%{customdata[0]}</b><br>"
-                "Age: %{x}<br>Score: %{y:.1f}<br>"
-                "MV: €%{customdata[1]:.2f}m<extra></extra>"
-            ),
-            customdata=list(zip(
-                sub["player"].fillna(""),
-                sub["market_value_m"].fillna(0),
-            )),
-        ))
-
-    fig.update_layout(
-        **CHART_DEFAULTS,
-        xaxis=dict(title="Age", gridcolor=BORDER, range=[16, 36]),
-        yaxis=dict(title="Adjusted Score", gridcolor=BORDER),
-        legend=dict(orientation="h", y=-0.15, font=dict(size=10)),
-        height=330,
-    )
-    return fig
+    if tab != "tab-market":
+        return no_update
+    return build_scatter_fig()
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 
