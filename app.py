@@ -1251,11 +1251,14 @@ def export_csv(n, table_data):
 # Tab 3 — render player profile
 @app.callback(
     Output("t3-body", "children"),
-    Input("selected-player", "data"),
+    [Input("selected-player", "data"),
+     Input("main-tabs",       "value")],
     State("shortlist-store", "data"),
     prevent_initial_call=True,
 )
-def render_profile(player_name, shortlist):
+def render_profile(player_name, tab, shortlist):
+    if tab != "tab-profile":
+        return no_update
     if not player_name:
         return html.P("No player selected.",
                       style={"color": TEXT_MUTED, "textAlign": "center",
