@@ -156,6 +156,13 @@ TACTICAL_PROFILES = {
     ],
 }
 
+# rgba equivalents for Plotly fillcolor (Plotly 6+ rejects 8-char hex)
+RGBA_RED   = "rgba(204,0,0,0.2)"
+RGBA_BLUE  = "rgba(21,101,192,0.2)"
+RGBA_GREEN = "rgba(0,200,83,0.2)"
+RGBA_AMBER = "rgba(255,179,0,0.2)"
+RGBA_COLORS = [RGBA_RED, RGBA_BLUE, RGBA_GREEN, RGBA_AMBER]
+
 RADAR_METRICS = {
     "CB": [("Tackling",     "tackle_success_rate"),
            ("Interceptions","interceptions_p90"),
@@ -557,7 +564,6 @@ SORT_OPTIONS = [
     {"label": "Market Value ↑",           "value": "mv_asc"},
     {"label": "Market Value ↓",           "value": "market_value_m"},
     {"label": "Age ↑",                    "value": "age"},
-    {"label": "Value Gap",                "value": "value_gap_m"},
 ]
 
 def build_tab2():
@@ -623,7 +629,7 @@ def build_tab2():
                            tooltip={"placement":"bottom"}),
 
                 html.Hr(style={"borderColor": BORDER, "margin": "12px 0"}),
-                html.Label("Status Filters",
+                html.Label("Contract Filter",
                            style={"color": TEXT_MUTED, "fontSize": "11px",
                                   "fontWeight": "700", "fontFamily": FONT,
                                   "display": "block", "marginBottom": "4px"}),
@@ -634,13 +640,6 @@ def build_tab2():
                                inputStyle={"marginRight": "5px"},
                                labelStyle={"display": "block", "marginBottom": "3px",
                                            "fontSize": "12px", "color": TEXT, "fontFamily": FONT}),
-                html.Div(style={"height": "6px"}),
-                dcc.Checklist(id="t2-val",
-                              options=["Undervalued", "Fair Value", "Overvalued"],
-                              value=["Undervalued", "Fair Value", "Overvalued"],
-                              inputStyle={"marginRight": "6px"},
-                              labelStyle={"display": "block", "marginBottom": "3px",
-                                          "fontSize": "12px", "color": TEXT, "fontFamily": FONT}),
 
                 html.Hr(style={"borderColor": BORDER, "margin": "12px 0"}),
                 html.Label("Sort By",
@@ -858,7 +857,7 @@ def build_tab6():
                           style={"height": "340px"}),
             ], style=CARD)], md=6),
             dbc.Col([html.Div([
-                html.H5("📊 Undervalued Players by League",
+                html.H5("📊 Top Scoring Players by League",
                         style={**H, "marginBottom": "8px", "fontSize": "14px"}),
                 dcc.Graph(id="t6-undervalued",
                           config={"displayModeBar": False},
@@ -1074,14 +1073,13 @@ def set_nav_position(pos):
      State("t2-mv",       "value"),
      State("t2-mins",     "value"),
      State("t2-contract", "value"),
-     State("t2-val",      "value"),
      State("t2-sort",     "value"),
      State("t2-tactical", "value"),
      State("shortlist-store", "data")],
     prevent_initial_call=True,
 )
 def update_discovery(apply_n, reset_n, pos, leagues, max_age, max_mv, min_mins,
-                     contract, val_filter, sort_by, tactical, shortlist):
+                     contract, sort_by, tactical, shortlist):
     ctx = callback_context
     if not ctx.triggered or not pos:
         return (html.P("Select a position to load results.",
@@ -1110,8 +1108,6 @@ def update_discovery(apply_n, reset_n, pos, leagues, max_age, max_mv, min_mins,
         df = df[df["minutes"].fillna(0) >= min_mins]
     if contract == "expiring":
         df = df[df["contract_expiring"] == True]
-    if val_filter:
-        df = df[df["valuation_status"].isin(val_filter)]
     if tactical:
         df = apply_tactical_filter(df, pos, tactical)
 
@@ -1148,7 +1144,6 @@ def update_discovery(apply_n, reset_n, pos, leagues, max_age, max_mv, min_mins,
             "MV (€m)": mv_str,
             "Raw":     round(float(r["raw_scouting_score"]), 1) if pd.notna(r["raw_scouting_score"]) else "–",
             "Score":   round(float(r["adjusted_scouting_score"]), 1) if pd.notna(r["adjusted_scouting_score"]) else "–",
-            "Status":  r.get("valuation_status", ""),
             "Exp":     contract_ico,
         })
 
@@ -1157,7 +1152,7 @@ def update_discovery(apply_n, reset_n, pos, leagues, max_age, max_mv, min_mins,
         data=table_data,
         columns=[{"name": c, "id": c} for c in
                  ["★", "Player", "Club", "League", "Age", "Pos",
-                  "MV (€m)", "Raw", "Score", "Status", "Exp"]],
+                  "MV (€m)", "Raw", "Score", "Exp"]],
         page_size=25,
         sort_action="native",
         filter_action="native",
@@ -1178,10 +1173,6 @@ def update_discovery(apply_n, reset_n, pos, leagues, max_age, max_mv, min_mins,
         ],
         style_data_conditional=[
             {"if": {"row_index": "odd"}, "background": BG_CARD2},
-            {"if": {"filter_query": '{Status} = "Undervalued"'},
-             "color": GREEN},
-            {"if": {"filter_query": '{Status} = "Overvalued"'},
-             "color": RED},
             {"if": {"filter_query": '{★} = "★"'}, "color": AMBER},
         ],
         active_cell=None,
@@ -1201,10 +1192,10 @@ def update_discovery(apply_n, reset_n, pos, leagues, max_age, max_mv, min_mins,
 
 # Tab 2 — row click → profile or shortlist
 @app.callback(
-    [Output("selected-player",   "data"),
-     Output("main-tabs",         "value"),
-     Output("shortlist-store",   "data"),
-     Output("t2-shortlist-msg",  "children")],
+    [Output("selected-player",              "data"),
+     Output("main-tabs",                    "value", allow_duplicate=True),
+     Output("shortlist-store",              "data",  allow_duplicate=True),
+     Output("t2-shortlist-msg",             "children")],
     Input("t2-table", "active_cell"),
     [State("t2-table",        "data"),
      State("shortlist-store", "data")],
@@ -1237,7 +1228,6 @@ def handle_table_click(active_cell, table_data, shortlist):
                 "position_group":       str(r.get("position_group", "")),
                 "market_value_m":       float(r["market_value_m"]) if pd.notna(r["market_value_m"]) else 0,
                 "adjusted_scouting_score": float(r["adjusted_scouting_score"]) if pd.notna(r["adjusted_scouting_score"]) else 0,
-                "valuation_status":     str(r.get("valuation_status", "")),
                 "contract_expiring":    bool(r.get("contract_expiring", False)),
             })
         msg = f"⭐ Added {pname} to shortlist ({len(shortlist)}/10)"
@@ -1279,7 +1269,6 @@ def render_profile(player_name, shortlist):
     r   = pr.iloc[0]
     pos = str(r.get("position_group", ""))
     mv  = r.get("market_value_m")
-    val = str(r.get("valuation_status", ""))
     exp = bool(r.get("contract_expiring", False))
 
     shortlist_names = [p["player"] for p in (shortlist or [])]
@@ -1287,10 +1276,9 @@ def render_profile(player_name, shortlist):
 
     # Header
     mv_badge = badge(f"€{mv:.2f}m" if pd.notna(mv) else "–", BLUE, BLUE + "22")
-    val_badge = badge(val, val_badge_color(val), val_badge_color(val) + "22")
     exp_badge = badge("⚡ Expiring", AMBER, AMBER + "22") if exp else None
 
-    badges = [mv_badge, html.Span(" "), val_badge]
+    badges = [mv_badge]
     if exp_badge:
         badges += [html.Span(" "), exp_badge]
 
@@ -1507,12 +1495,11 @@ def render_profile(player_name, shortlist):
                 "MV (€m)":   f"€{smv:.2f}m" if pd.notna(smv) else "–",
                 "Sim%":      f"{sr['similarity_pct']:.0f}%",
                 "Score":     round(float(sr["adjusted_scouting_score"]), 1) if pd.notna(sr.get("adjusted_scouting_score")) else "–",
-                "Status":    sr.get("valuation_status", ""),
             })
         sim_section = dash_table.DataTable(
             data=sim_data,
             columns=[{"name": c, "id": c} for c in
-                     ["★", "Player", "Club", "League", "Age", "MV (€m)", "Sim%", "Score", "Status"]],
+                     ["★", "Player", "Club", "League", "Age", "MV (€m)", "Sim%", "Score"]],
             style_header=TBL_HEADER,
             style_cell={**TBL_CELL, "fontSize": "12px", "textAlign": "left"},
             style_cell_conditional=[
@@ -1522,7 +1509,6 @@ def render_profile(player_name, shortlist):
             ],
             style_data_conditional=[
                 {"if": {"row_index": "odd"}, "background": BG_CARD2},
-                {"if": {"filter_query": '{Status} = "Undervalued"'}, "color": GREEN},
             ],
         )
 
@@ -1567,7 +1553,6 @@ def profile_shortlist_toggle(n, player_name, shortlist):
         "position_group":       str(r.get("position_group", "")),
         "market_value_m":       float(r["market_value_m"]) if pd.notna(r["market_value_m"]) else 0,
         "adjusted_scouting_score": float(r["adjusted_scouting_score"]) if pd.notna(r["adjusted_scouting_score"]) else 0,
-        "valuation_status":     str(r.get("valuation_status", "")),
         "contract_expiring":    bool(r.get("contract_expiring", False)),
     })
     return shortlist
@@ -1610,7 +1595,6 @@ def render_shortlist(shortlist):
             "Pos":      p.get("position_group", ""),
             "MV (€m)":  f"€{mv:.2f}m" if mv and mv > 0 else "–",
             "Score":    round(p.get("adjusted_scouting_score", 0), 1),
-            "Status":   p.get("valuation_status", ""),
             "Contract": "⚡" if p.get("contract_expiring") else "",
         })
 
@@ -1619,7 +1603,7 @@ def render_shortlist(shortlist):
         data=rows,
         columns=[{"name": c, "id": c} for c in
                  ["Remove", "Player", "Club", "League", "Age", "Pos",
-                  "MV (€m)", "Score", "Status", "Contract"]],
+                  "MV (€m)", "Score", "Contract"]],
         row_selectable="multi",
         selected_rows=[],
         style_header=TBL_HEADER,
@@ -1632,7 +1616,6 @@ def render_shortlist(shortlist):
         ],
         style_data_conditional=[
             {"if": {"row_index": "odd"}, "background": BG_CARD2},
-            {"if": {"filter_query": '{Status} = "Undervalued"'}, "color": GREEN},
         ],
         active_cell=None,
     )
@@ -1716,7 +1699,7 @@ def update_comparison(selected_rows, table_data):
                 r=vals + [vals[0]],
                 theta=lbls + [lbls[0]],
                 fill="toself",
-                fillcolor=COLORS[i % len(COLORS)] + "33",
+                fillcolor=RGBA_COLORS[i % len(RGBA_COLORS)],
                 line=dict(color=COLORS[i % len(COLORS)], width=2),
                 name=pname,
             ))
@@ -1869,7 +1852,6 @@ def find_replacements(n, player_name, budget, max_age, diff_league, tgt_only):
             "Sim%":       f"{sim_pct:.0f}%",
             "Score":      round(float(sr.get("adjusted_scouting_score", 0)), 1),
             "Cheaper By": cheaper_str,
-            "Status":     sr.get("valuation_status", ""),
             "Exp":        "⚡" if sr.get("contract_expiring") else "",
         })
 
@@ -1877,7 +1859,7 @@ def find_replacements(n, player_name, budget, max_age, diff_league, tgt_only):
         data=rows,
         columns=[{"name": c, "id": c} for c in
                  ["★", "Player", "Club", "League", "Age", "MV (€m)",
-                  "Sim%", "Score", "Cheaper By", "Status", "Exp"]],
+                  "Sim%", "Score", "Cheaper By", "Exp"]],
         style_header=TBL_HEADER,
         style_cell={**TBL_CELL, "textAlign": "left", "fontSize": "12px"},
         style_cell_conditional=[
@@ -1890,7 +1872,6 @@ def find_replacements(n, player_name, budget, max_age, diff_league, tgt_only):
             {"if": {"row_index": "odd"}, "background": BG_CARD2},
             {"if": {"filter_query": '{Sim%} contains "8" && {Sim%} != "–"'},
              "background": GREEN + "11"},
-            {"if": {"filter_query": '{Status} = "Undervalued"'}, "color": GREEN},
             {"if": {"filter_query": '{Cheaper By} contains "cheaper"'}, "color": GREEN},
         ],
     )
@@ -1935,29 +1916,36 @@ def update_best_value(tab):
     )
     return fig
 
-# Tab 6 — undervalued by league
+# Tab 6 — top scoring players by league
 @app.callback(
     Output("t6-undervalued", "figure"),
     Input("main-tabs", "value"),
 )
-def update_undervalued(tab):
-    df = DF[DF["valuation_status"] == "Undervalued"].copy()
-    counts = df.groupby("league_clean").size().reset_index(name="count")
-    counts = counts.sort_values("count", ascending=False)
-    if counts.empty:
+def update_top_scoring_by_league(tab):
+    df = DF.dropna(subset=["adjusted_scouting_score", "league_clean"]).copy()
+    avg_scores = (df.groupby("league_clean")["adjusted_scouting_score"]
+                    .mean()
+                    .reset_index(name="avg_score")
+                    .sort_values("avg_score", ascending=False))
+    if avg_scores.empty:
         return go.Figure()
 
+    league_colors = [RED, BLUE, GREEN, AMBER, "#9C27B0", "#00BCD4", "#FF5722",
+                     "#795548", "#607D8B", "#E91E63"]
+    colors_list = [league_colors[i % len(league_colors)]
+                   for i in range(len(avg_scores))]
+
     fig = go.Figure(go.Bar(
-        x=counts["league_clean"],
-        y=counts["count"],
-        marker=dict(color=GREEN, opacity=0.8),
-        hovertemplate="%{x}<br>Undervalued: %{y}<extra></extra>",
+        x=avg_scores["league_clean"],
+        y=avg_scores["avg_score"],
+        marker=dict(color=colors_list, opacity=0.85),
+        hovertemplate="%{x}<br>Avg Score: %{y:.1f}<extra></extra>",
     ))
     fig.update_layout(
         **CHART_DEFAULTS,
-        title=dict(text="Count of Undervalued Players", font=dict(size=12)),
-        xaxis=dict(title="", tickfont=dict(size=11)),
-        yaxis=dict(title="Players", gridcolor=BORDER),
+        title=dict(text="Average Adjusted Scouting Score", font=dict(size=12)),
+        xaxis=dict(title="", tickfont=dict(size=10), tickangle=-30),
+        yaxis=dict(title="Avg Score", gridcolor=BORDER),
         height=330,
     )
     return fig
@@ -2017,15 +2005,15 @@ def update_scatter(tab):
     if df.empty:
         return go.Figure()
 
-    color_map = {"Undervalued": GREEN, "Fair Value": TEXT_MUTED,
-                 "Overvalued": RED, "Unknown": BORDER}
+    pos_color_map = {"CB": BLUE, "FB": "#00BCD4", "DM": "#9C27B0",
+                     "CM": AMBER, "AM": "#FF5722", "W": GREEN, "ST": RED}
 
     fig = go.Figure()
 
     # Target zone rectangle
     fig.add_shape(
         type="rect", x0=22, x1=28, y0=60, y1=100,
-        fillcolor=GREEN + "18", line=dict(color=GREEN + "44", width=1),
+        fillcolor="rgba(0,200,83,0.09)", line=dict(color="rgba(0,200,83,0.27)", width=1),
         layer="below",
     )
     fig.add_annotation(
@@ -2034,8 +2022,8 @@ def update_scatter(tab):
         showarrow=False, bgcolor=BG_CARD2 + "CC",
     )
 
-    for status, color in color_map.items():
-        sub = df[df["valuation_status"] == status]
+    for pos, color in pos_color_map.items():
+        sub = df[df["position_group"] == pos]
         if sub.empty:
             continue
         fig.add_trace(go.Scatter(
@@ -2048,7 +2036,7 @@ def update_scatter(tab):
                 opacity=0.7,
                 line=dict(width=0),
             ),
-            name=status,
+            name=pos,
             hovertemplate=(
                 "<b>%{customdata[0]}</b><br>"
                 "Age: %{x}<br>Score: %{y:.1f}<br>"
