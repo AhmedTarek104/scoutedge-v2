@@ -550,13 +550,27 @@ def build_tab1():
 
 # ── Tab 2: Player Discovery ───────────────────────────────────────────────────
 
-LEAGUE_DIFFICULTY_DOTS = {
-    "Premier League": "●●●●●",
-    "La Liga":        "●●●●●",
-    "Bundesliga":     "●●●●●",
-    "Serie A":        "●●●●●",
-    "Ligue 1":        "●●●●●",
-}
+TARGET_LEAGUE_ORDER = [
+    "Super Lig",
+    "Primeira Liga",
+    "Eredivisie",
+    "Superliga",
+    "Belgian Pro League",
+    "Serie A (Brazil)",
+    "Primera Division",
+    "Scottish Premiership",
+]
+
+BIG5_LEAGUE_ORDER = [
+    "Premier League",
+    "La Liga",
+    "Bundesliga",
+    "Serie A",
+    "Ligue 1",
+]
+
+# Player counts per league — computed once at startup
+_LEAGUE_COUNTS = DF["league_clean"].value_counts().to_dict()
 
 SORT_OPTIONS = [
     {"label": "Adjusted Score (default)", "value": "adjusted_scouting_score"},
@@ -567,10 +581,6 @@ SORT_OPTIONS = [
 ]
 
 def build_tab2():
-    league_opts = [
-        {"label": f"{l}  {LEAGUE_DIFFICULTY_DOTS.get(l, '')}", "value": l}
-        for l in LEAGUES_IN_DATA
-    ]
     return html.Div([
         dbc.Row([
             # Sidebar
@@ -591,16 +601,42 @@ def build_tab2():
                              style={"marginBottom": "14px",
                                     "fontFamily": FONT, "fontSize": "13px"}),
 
-                html.Label("Target Leagues",
-                           style={"color": TEXT_MUTED, "fontSize": "11px",
-                                  "fontWeight": "700", "fontFamily": FONT}),
-                dcc.Checklist(id="t2-leagues",
-                              options=league_opts,
-                              value=LEAGUES_IN_DATA,
-                              inputStyle={"marginRight": "6px"},
-                              labelStyle={"display": "block", "marginBottom": "3px",
-                                          "fontSize": "12px", "color": TEXT,
-                                          "fontFamily": FONT}),
+                # ── League selector — two groups ─────────────────────────
+                html.Div("Al Ahly Target Leagues",
+                         style={"color": AMBER, "fontSize": "10px", "fontWeight": "700",
+                                "letterSpacing": "0.5px", "textTransform": "uppercase",
+                                "fontFamily": FONT, "marginBottom": "4px"}),
+                dcc.Checklist(
+                    id="t2-leagues-target",
+                    options=[
+                        {"label": f" {l}  ({_LEAGUE_COUNTS.get(l, 0):,})", "value": l}
+                        for l in TARGET_LEAGUE_ORDER
+                        if l in _LEAGUE_COUNTS
+                    ],
+                    value=[l for l in TARGET_LEAGUE_ORDER if l in _LEAGUE_COUNTS],
+                    inputStyle={"marginRight": "5px"},
+                    labelStyle={"display": "block", "marginBottom": "3px",
+                                "fontSize": "11px", "color": TEXT, "fontFamily": FONT},
+                ),
+                html.Div("Big 5 Leagues",
+                         style={"color": TEXT_MUTED, "fontSize": "10px", "fontWeight": "700",
+                                "letterSpacing": "0.5px", "textTransform": "uppercase",
+                                "fontFamily": FONT, "marginTop": "8px", "marginBottom": "4px"}),
+                dcc.Checklist(
+                    id="t2-leagues-big5",
+                    options=[
+                        {"label": f" {l}  ({_LEAGUE_COUNTS.get(l, 0):,})", "value": l}
+                        for l in BIG5_LEAGUE_ORDER
+                        if l in _LEAGUE_COUNTS
+                    ],
+                    value=[],          # unchecked by default
+                    inputStyle={"marginRight": "5px"},
+                    labelStyle={"display": "block", "marginBottom": "3px",
+                                "fontSize": "11px", "color": TEXT_MUTED, "fontFamily": FONT},
+                ),
+                # Hidden combined store read by the filter callback
+                dcc.Store(id="t2-leagues", data=[l for l in TARGET_LEAGUE_ORDER
+                                                  if l in _LEAGUE_COUNTS]),
 
                 html.Hr(style={"borderColor": BORDER, "margin": "12px 0"}),
                 html.Label("Player Criteria",
@@ -610,8 +646,8 @@ def build_tab2():
 
                 html.Div(id="t2-age-lbl",
                          style={"color": AMBER, "fontSize": "11px", "fontFamily": FONT}),
-                dcc.Slider(id="t2-age", min=16, max=35, value=30, step=1,
-                           marks={16:"16", 20:"20", 25:"25", 30:"30", 35:"35"},
+                dcc.Slider(id="t2-age", min=16, max=35, value=28, step=1,
+                           marks={16:"16", 20:"20", 25:"25", 28:"28", 35:"35"},
                            tooltip={"placement":"bottom"}),
 
                 html.Div(id="t2-mv-lbl",
@@ -1022,7 +1058,7 @@ app.layout = html.Div([
                                  "fontFamily": FONT, "marginLeft": "6px"}),
             ]),
             dbc.Col(
-                html.Div(f"1,435 players · 1,352 valued",
+                html.Div(f"{len(DF):,} players · {len(LEAGUES_IN_DATA)} leagues · {int(DF['market_value_m'].notna().sum()):,} valued",
                          style={"color": TEXT_MUTED, "fontSize": "12px",
                                 "fontFamily": FONT, "textAlign": "right"}),
                 width="auto",
@@ -1104,6 +1140,15 @@ def navigate_to_discovery(n_clicks_list):
         return no_update, no_update
     return "tab-discovery", pos
 
+# Tab 2 — merge two league checklists into combined store
+@app.callback(
+    Output("t2-leagues", "data"),
+    [Input("t2-leagues-target", "value"),
+     Input("t2-leagues-big5",   "value")],
+)
+def merge_league_selections(target_vals, big5_vals):
+    return (target_vals or []) + (big5_vals or [])
+
 # Tab 2 — slider labels
 @app.callback(
     [Output("t2-age-lbl",  "children"),
@@ -1151,7 +1196,7 @@ def set_nav_position(pos):
     [Input("t2-apply", "n_clicks"),
      Input("t2-reset", "n_clicks")],
     [State("t2-pos",      "value"),
-     State("t2-leagues",  "value"),
+     State("t2-leagues",  "data"),
      State("t2-age",      "value"),
      State("t2-mv",       "value"),
      State("t2-mins",     "value"),
