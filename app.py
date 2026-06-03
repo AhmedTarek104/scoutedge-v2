@@ -39,16 +39,28 @@ SQUAD["contract_expiring"]  = SQUAD["contract_expiry_dt"].apply(
 print(f"  {len(SQUAD)} squad players loaded")
 
 pkl_path = DATA_PROC / "similarity_matrices.pkl"
+MATRICES = None
 if pkl_path.exists():
-    with open(pkl_path, "rb") as fh:
-        MATRICES = pickle.load(fh)
-    print("  Cached similarity matrices loaded")
-else:
+    try:
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")   # suppress sklearn version mismatch noise
+            with open(pkl_path, "rb") as fh:
+                MATRICES = pickle.load(fh)
+        print("  Cached similarity matrices loaded")
+    except Exception as e:
+        print(f"  Cache load failed ({e}), rebuilding...")
+        MATRICES = None
+if MATRICES is None:
     print("  Building similarity matrices...")
     MATRICES = build_similarity_matrices(DF)
-    with open(pkl_path, "wb") as fh:
-        pickle.dump(MATRICES, fh)
-    print("  Matrices saved")
+    try:
+        DATA_PROC.mkdir(parents=True, exist_ok=True)
+        with open(pkl_path, "wb") as fh:
+            pickle.dump(MATRICES, fh)
+        print("  Matrices saved")
+    except Exception as e:
+        print(f"  Could not save matrices: {e}")
 
 LEAGUES_IN_DATA = sorted(DF["league_clean"].dropna().unique().tolist())
 
