@@ -1,6 +1,6 @@
 from pathlib import Path
 
-ROOT       = Path(r"F:\scoutedge_v2")
+ROOT       = Path(__file__).resolve().parent.parent
 DATA_RAW   = ROOT / "data" / "raw"
 DATA_PROC  = ROOT / "data" / "processed"
 DATA_FINAL = ROOT / "data" / "final"
