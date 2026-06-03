@@ -77,45 +77,65 @@ def compute_efficiency(df):
 
 # 4d. Scouting scores
 def compute_scouting_scores(df):
+    """
+    Compute scouting scores with per-player weight redistribution.
+
+    Percentile ranks are computed within each position_group across ALL leagues.
+    For features absent or NaN for a specific player (e.g. xg_p90 for non-Big-5),
+    that feature's weight is redistributed proportionally among the player's
+    available features — so Big-5 and non-Big-5 players are scored on the same
+    0-100 scale and are directly comparable.
+    """
     df = df.copy()
     df["raw_scouting_score"]      = np.nan
     df["adjusted_scouting_score"] = np.nan
 
     for pos_group, weights in SCOUTING_WEIGHTS.items():
-        mask = df["position_group"] == pos_group
+        mask   = df["position_group"] == pos_group
         pos_df = df[mask].copy()
         if len(pos_df) == 0:
             continue
 
-        available_features = {}
+        # Step 1 — pre-compute percentile ranks for each feature across the
+        # whole position group (using all players with a non-NaN value).
+        # na_option="keep" leaves NaN players unranked (they'll be skipped
+        # per-player below rather than imputed with 50).
+        pct_ranks = {}
         for feat, wt in weights.items():
-            if feat in pos_df.columns:
-                series = pd.to_numeric(pos_df[feat], errors="coerce")
-                if series.var(skipna=True) > 0:
-                    available_features[feat] = wt
-                else:
-                    print(f"  WARN [{pos_group}] {feat}: zero variance, skipping")
-            else:
-                print(f"  WARN [{pos_group}] {feat}: column not found, skipping")
+            if feat not in pos_df.columns:
+                continue
+            series = pd.to_numeric(pos_df[feat], errors="coerce")
+            if series.var(skipna=True) > 0:
+                pct_ranks[feat] = series.rank(pct=True, na_option="keep") * 100
 
-        if not available_features:
-            print(f"  ERROR [{pos_group}]: no features available!")
+        if not pct_ranks:
+            print(f"  ERROR [{pos_group}]: no features with variance!")
             continue
 
-        # Re-normalise weights so they always sum to 1.0
-        total_wt = sum(available_features.values())
-        norm_wts = {f: w / total_wt for f, w in available_features.items()}
+        # Step 2 — per-player score with weight redistribution
+        scores = pd.Series(np.nan, index=pos_df.index, dtype=float)
+        for idx in pos_df.index:
+            # Collect features this player actually has a value for
+            player_avail = {
+                feat: weights[feat]
+                for feat in pct_ranks
+                if pd.notna(pct_ranks[feat].loc[idx])
+            }
+            if not player_avail:
+                scores.loc[idx] = 50.0
+                continue
 
-        # Compute percentile ranks WITHIN this position group
-        score = pd.Series(0.0, index=pos_df.index)
-        for feat, wt in norm_wts.items():
-            series = pd.to_numeric(pos_df[feat], errors="coerce")
-            pct_rank = series.rank(pct=True, na_option="keep") * 100
-            score = score + pct_rank.fillna(50) * wt
+            # Renormalise weights over available features only
+            total_wt = sum(player_avail.values())
+            score = sum(
+                (wt / total_wt) * pct_ranks[feat].loc[idx]
+                for feat, wt in player_avail.items()
+            )
+            scores.loc[idx] = round(score, 1)
 
-        df.loc[mask, "raw_scouting_score"] = score.round(1)
+        df.loc[mask, "raw_scouting_score"] = scores
         ld = pd.to_numeric(df.loc[mask, "league_difficulty"], errors="coerce").fillna(0.75)
-        df.loc[mask, "adjusted_scouting_score"] = (score * ld).round(1)
+        df.loc[mask, "adjusted_scouting_score"] = (scores * ld).round(1)
 
     print("\nAverage scores per position group:")
     summary = df.groupby("position_group")[["raw_scouting_score","adjusted_scouting_score"]].mean()

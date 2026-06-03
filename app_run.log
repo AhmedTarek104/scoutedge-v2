@@ -1,0 +1,13 @@
+Loading players_final.csv...
+  1435 players loaded
+  26 squad players loaded
+  Cached similarity matrices loaded
+Dash is running on http://127.0.0.1:8050/
+
+ * Serving Flask app 'app'
+ * Debug mode: on
+Exception in thread Thread-1 (<lambda>):
+Loading players_final.csv...
+  1435 players loaded
+  26 squad players loaded
+  Cached similarity matrices loaded
