@@ -260,28 +260,25 @@ def badge(text, color=GREEN, bg=None):
         "fontFamily": FONT, "whiteSpace": "nowrap",
     })
 
-def apply_tactical_filter(df_pos, pos, active_profiles):
-    """Filter df_pos by active tactical profile toggles."""
+def get_tactical_sort_info(pos, active_profiles):
+    """Return (sort_col, position_series) for tactical sorting.
+
+    Picks the primary column from the first active profile that exists in DF.
+    Returns (None, None) when nothing matches so callers can fall back safely.
+    """
     if not active_profiles:
-        return df_pos
+        return None, None
     profiles = {name: conds for name, conds in TACTICAL_PROFILES.get(pos, [])}
-    mask = pd.Series([True] * len(df_pos), index=df_pos.index)
     for profile_name in active_profiles:
         if profile_name not in profiles:
             continue
-        for col, op, thresh_pct in profiles[profile_name]:
-            if col not in df_pos.columns:
-                continue
-            series = pd.to_numeric(df_pos[col], errors="coerce")
-            pct_val = float(np.nanpercentile(
-                pd.to_numeric(DF[DF["position_group"] == pos][col], errors="coerce").dropna(),
-                thresh_pct
-            ))
-            if op == ">=":
-                mask &= series >= pct_val
-            elif op == "<":
-                mask &= series < pct_val
-    return df_pos[mask]
+        for col, _op, _thr in profiles[profile_name]:
+            if col in DF.columns:
+                series = pd.to_numeric(
+                    DF[DF["position_group"] == pos][col], errors="coerce"
+                ).dropna()
+                return col, series
+    return None, None
 
 # ── Formation Pitch ───────────────────────────────────────────────────────────
 
@@ -702,7 +699,7 @@ def build_tab2():
                     html.Span("⭐ Tactical Profile",
                               style={"color": AMBER, "fontSize": "11px",
                                      "fontWeight": "700", "fontFamily": FONT}),
-                    html.Div("Filter by playing style",
+                    html.Div("Sort by playing style — no players excluded",
                              style={"color": TEXT_MUTED, "fontSize": "10px",
                                     "fontFamily": FONT, "marginBottom": "6px"}),
                     dcc.Checklist(id="t2-tactical",
@@ -1248,11 +1245,14 @@ def update_discovery(apply_n, reset_n, pos, leagues, max_age, max_mv, min_mins,
         df = df[df["minutes"].fillna(0) >= min_mins]
     if contract == "expiring":
         df = df[df["contract_expiring"] == True]
-    if tactical:
-        df = apply_tactical_filter(df, pos, tactical)
+
+    # Tactical: sort by key stat, never filter out players
+    tact_col, tact_series = get_tactical_sort_info(pos, tactical) if tactical else (None, None)
 
     # Sort
-    if sort_by == "mv_asc":
+    if tact_col and tact_col in df.columns:
+        df = df.sort_values(tact_col, ascending=False)
+    elif sort_by == "mv_asc":
         df = df.sort_values("market_value_m", ascending=True)
     elif sort_by in df.columns:
         df = df.sort_values(sort_by, ascending=(sort_by == "age"))
@@ -1274,7 +1274,7 @@ def update_discovery(apply_n, reset_n, pos, leagues, max_age, max_mv, min_mins,
         star = "★" if r["player"] in shortlist_names else "☆"
         mv_str = f"€{r['market_value_m']:.2f}m" if pd.notna(r["market_value_m"]) else "–"
         contract_ico = "⚡" if r.get("contract_expiring") else ""
-        table_data.append({
+        row = {
             "★":       star,
             "Player":  r["player"],
             "Club":    r.get("team", ""),
@@ -1285,14 +1285,25 @@ def update_discovery(apply_n, reset_n, pos, leagues, max_age, max_mv, min_mins,
             "Raw":     round(float(r["raw_scouting_score"]), 1) if pd.notna(r["raw_scouting_score"]) else "–",
             "Score":   round(float(r["adjusted_scouting_score"]), 1) if pd.notna(r["adjusted_scouting_score"]) else "–",
             "Exp":     contract_ico,
-        })
+        }
+        if tact_col and tact_series is not None:
+            val_num = pd.to_numeric(r.get(tact_col), errors="coerce")
+            if pd.notna(val_num) and len(tact_series) > 0:
+                pct = round(float((tact_series < val_num).mean() * 100))
+                row["Profile%"] = f"{pct}th"
+            else:
+                row["Profile%"] = "–"
+        table_data.append(row)
+
+    _col_names = ["★", "Player", "Club", "League", "Age", "Pos", "MV (€m)", "Raw", "Score"]
+    if tact_col:
+        _col_names.append("Profile%")
+    _col_names.append("Exp")
 
     tbl = dash_table.DataTable(
         id="t2-table",
         data=table_data,
-        columns=[{"name": c, "id": c} for c in
-                 ["★", "Player", "Club", "League", "Age", "Pos",
-                  "MV (€m)", "Raw", "Score", "Exp"]],
+        columns=[{"name": c, "id": c} for c in _col_names],
         page_size=25,
         sort_action="native",
         filter_action="native",
@@ -1302,13 +1313,15 @@ def update_discovery(apply_n, reset_n, pos, leagues, max_age, max_mv, min_mins,
         style_cell={**TBL_CELL, "textAlign": "left", "maxWidth": "160px",
                     "overflow": "hidden", "textOverflow": "ellipsis"},
         style_cell_conditional=[
-            {"if": {"column_id": "★"},    "width": "30px", "textAlign": "center",
+            {"if": {"column_id": "★"},       "width": "30px", "textAlign": "center",
              "cursor": "pointer", "color": AMBER, "fontSize": "14px"},
-            {"if": {"column_id": "Age"},  "width": "40px", "textAlign": "center"},
-            {"if": {"column_id": "Pos"},  "width": "40px", "textAlign": "center"},
-            {"if": {"column_id": "Raw"},  "width": "55px", "textAlign": "center"},
-            {"if": {"column_id": "Score"},"width": "55px", "textAlign": "center"},
-            {"if": {"column_id": "Exp"},  "width": "30px", "textAlign": "center",
+            {"if": {"column_id": "Age"},     "width": "40px", "textAlign": "center"},
+            {"if": {"column_id": "Pos"},     "width": "40px", "textAlign": "center"},
+            {"if": {"column_id": "Raw"},     "width": "55px", "textAlign": "center"},
+            {"if": {"column_id": "Score"},   "width": "55px", "textAlign": "center"},
+            {"if": {"column_id": "Profile%"},"width": "65px", "textAlign": "center",
+             "color": AMBER, "fontWeight": "700"},
+            {"if": {"column_id": "Exp"},     "width": "30px", "textAlign": "center",
              "color": AMBER},
         ],
         style_data_conditional=[

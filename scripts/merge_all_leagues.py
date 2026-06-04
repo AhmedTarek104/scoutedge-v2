@@ -218,7 +218,8 @@ tm["market_value_m"]  = pd.to_numeric(tm["market_value_in_eur"], errors="coerce"
 tm["contract_expiry"] = tm["contract_expiration_date"]
 tm_lookup = (tm[["name", "market_value_m", "contract_expiry"]]
                .dropna(subset=["name"])
-               .drop_duplicates(subset=["name"], keep="last"))
+               .sort_values("market_value_m", ascending=False, na_position="last")
+               .drop_duplicates(subset=["name"], keep="first"))
 tm_names = tm_lookup["name"].tolist()
 tm_lower = {n.lower(): n for n in tm_names}
 
