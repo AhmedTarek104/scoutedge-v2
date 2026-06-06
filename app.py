@@ -260,11 +260,15 @@ def badge(text, color=GREEN, bg=None):
         "fontFamily": FONT, "whiteSpace": "nowrap",
     })
 
-def get_tactical_sort_info(pos, active_profiles):
+def get_tactical_sort_info(pos, active_profiles, filtered_df=None):
     """Return (sort_col, position_series) for tactical sorting.
 
-    Picks the primary column from the first active profile that exists in DF.
-    Returns (None, None) when nothing matches so callers can fall back safely.
+    Iterates through each condition in the first active profile and returns
+    the first column that has at least one non-NaN value in filtered_df.
+    This prevents returning an all-NaN column (e.g. progressive_passes_p90
+    for non-Big5 leagues) that would make the sort a visual no-op.
+
+    Returns (None, None) when no usable column is found.
     """
     if not active_profiles:
         return None, None
@@ -273,11 +277,19 @@ def get_tactical_sort_info(pos, active_profiles):
         if profile_name not in profiles:
             continue
         for col, _op, _thr in profiles[profile_name]:
-            if col in DF.columns:
-                series = pd.to_numeric(
-                    DF[DF["position_group"] == pos][col], errors="coerce"
-                ).dropna()
-                return col, series
+            if col not in DF.columns:
+                continue
+            # Skip columns with no real data in the current filtered result set
+            if filtered_df is not None:
+                n_valid = pd.to_numeric(filtered_df[col], errors="coerce").notna().sum()
+                if n_valid == 0:
+                    continue
+            series = pd.to_numeric(
+                DF[DF["position_group"] == pos][col], errors="coerce"
+            ).dropna()
+            if len(series) == 0:
+                continue
+            return col, series
     return None, None
 
 # ── Formation Pitch ───────────────────────────────────────────────────────────
@@ -1247,7 +1259,11 @@ def update_discovery(apply_n, reset_n, pos, leagues, max_age, max_mv, min_mins,
         df = df[df["contract_expiring"] == True]
 
     # Tactical: sort by key stat, never filter out players
-    tact_col, tact_series = get_tactical_sort_info(pos, tactical) if tactical else (None, None)
+    # Pass filtered df so all-NaN columns (e.g. progressive_passes_p90 for non-Big5
+    # leagues) are skipped and we fall through to the next available stat.
+    tact_col, tact_series = (
+        get_tactical_sort_info(pos, tactical, df) if tactical else (None, None)
+    )
 
     # Sort
     if tact_col and tact_col in df.columns:
@@ -1333,6 +1349,21 @@ def update_discovery(apply_n, reset_n, pos, leagues, max_age, max_mv, min_mins,
         tooltip_duration=None,
     )
 
+    # Header: show sort status (tactical stat used or fallback reason)
+    tact_note_parts = []
+    if tactical:
+        if tact_col:
+            tact_note_parts.append(
+                html.Span(f"  ·  sorted by {tact_col}",
+                          style={"color": AMBER, "fontSize": "11px", "fontFamily": FONT})
+            )
+        else:
+            # Profile selected but no available stat for current league filter
+            tact_note_parts.append(
+                html.Span(f"  ·  {', '.join(tactical)}: stat not available for selected leagues — showing score order",
+                          style={"color": RED, "fontSize": "11px", "fontFamily": FONT})
+            )
+
     hdr = html.Div([
         html.Span(f"{n} player{'s' if n != 1 else ''} found",
                   style={"color": TEXT, "fontWeight": "700",
@@ -1340,6 +1371,7 @@ def update_discovery(apply_n, reset_n, pos, leagues, max_age, max_mv, min_mins,
         html.Span(f"  ·  {pos}  ·  click ☆ to shortlist · click row to profile",
                   style={"color": TEXT_MUTED, "fontSize": "11px",
                          "fontFamily": FONT}),
+        *tact_note_parts,
     ])
     return tbl, hdr
 
