@@ -1,4 +1,4 @@
-import sys, pickle
+import sys, pickle, re
 from pathlib import Path
 from datetime import datetime, timedelta
 import pandas as pd
@@ -1159,7 +1159,9 @@ def _profile_content(player_name, shortlist):
                     html.Span(f"{r.get('team', '–')}  ·  ", style={"color": TEXT_MUTED, "fontFamily": FONT}),
                     html.Span(f"{r.get('league_clean', '–')}  ·  ", style={"color": TEXT_MUTED, "fontFamily": FONT}),
                     html.Span(f"Age {int(r['age']) if pd.notna(r['age']) else '–'}  ·  ", style={"color": TEXT_MUTED, "fontFamily": FONT}),
-                    html.Span(str(r.get("nationality", "–")), style={"color": TEXT_MUTED, "fontFamily": FONT}),
+                    html.Span(re.sub(r"^[a-z]{2,3} ", "",
+                                     str(r.get("nationality") or "–") if pd.notna(r.get("nationality")) else "–"),
+                              style={"color": TEXT_MUTED, "fontFamily": FONT}),
                 ], style={"marginBottom": "8px"}),
                 html.Div(badges),
             ]),
@@ -1246,10 +1248,10 @@ def _profile_content(player_name, shortlist):
         r_labels.append(lbl)
         r_values.append(pct_rank(val_num, pos_df[col]))
 
-    fig_radar = go.Figure()
-    if r_labels and r_values:
-        closed_r      = r_values + [r_values[0]]
-        closed_theta  = r_labels + [r_labels[0]]
+    if len(r_labels) >= 3:
+        fig_radar = go.Figure()
+        closed_r     = r_values + [r_values[0]]
+        closed_theta = r_labels + [r_labels[0]]
         fig_radar.add_trace(go.Scatterpolar(
             r=closed_r,
             theta=closed_theta,
@@ -1259,24 +1261,41 @@ def _profile_content(player_name, shortlist):
             name=player_name,
             hovertemplate="<b>%{theta}</b><br>Percentile: Top %{r:.0f}%<extra></extra>",
         ))
-    fig_radar.update_layout(
-        **CHART_DEFAULTS,
-        polar=dict(bgcolor=BG_CARD2,
-                   radialaxis=dict(visible=True, range=[0, 100],
-                                   tickfont=dict(size=8, color=TEXT_MUTED), gridcolor=BORDER),
-                   angularaxis=dict(tickfont=dict(size=10, color=TEXT))),
-        showlegend=True,
-        legend=dict(x=0, y=1.1, font=dict(size=10, color=TEXT)),
-        height=320,
-        hoverlabel=dict(bgcolor="#1A1A1A", font_size=13, font_color="#F5F5F5"),
-    )
-    radar_panel = html.Div([
-        html.H6("Radar Chart", style={"color": TEXT, "fontWeight": "600",
-                                       "fontFamily": FONT, "marginBottom": "2px"}),
-        html.Div(f"Percentile vs all {pos} peers  ·  available stats only",
-                 style={"color": TEXT_MUTED, "fontSize": "11px", "fontFamily": FONT, "marginBottom": "8px"}),
-        dcc.Graph(figure=fig_radar, config={"displayModeBar": False}),
-    ], style=CARD)
+        fig_radar.update_layout(
+            **CHART_DEFAULTS,
+            polar=dict(bgcolor=BG_CARD2,
+                       radialaxis=dict(visible=True, range=[0, 100],
+                                       tickfont=dict(size=8, color=TEXT_MUTED), gridcolor=BORDER),
+                       angularaxis=dict(tickfont=dict(size=10, color=TEXT))),
+            showlegend=True,
+            legend=dict(x=0, y=1.1, font=dict(size=10, color=TEXT)),
+            height=320,
+            hoverlabel=dict(bgcolor="#1A1A1A", font_size=13, font_color="#F5F5F5"),
+        )
+        radar_panel = html.Div([
+            html.H6("Radar Chart", style={"color": TEXT, "fontWeight": "600",
+                                           "fontFamily": FONT, "marginBottom": "2px"}),
+            html.Div(f"Percentile vs all {pos} peers  ·  available stats only",
+                     style={"color": TEXT_MUTED, "fontSize": "11px", "fontFamily": FONT, "marginBottom": "8px"}),
+            dcc.Graph(figure=fig_radar, config={"displayModeBar": False}),
+        ], style=CARD)
+    else:
+        available_names = " · ".join(r_labels) if r_labels else "none"
+        radar_panel = html.Div([
+            html.H6("Radar Chart", style={"color": TEXT, "fontWeight": "600",
+                                           "fontFamily": FONT, "marginBottom": "10px"}),
+            html.Div([
+                html.Div("⚠ Limited data available for this league",
+                         style={"color": AMBER, "fontWeight": "700", "fontSize": "13px",
+                                "fontFamily": FONT, "marginBottom": "8px"}),
+                html.Div(f"Available: {available_names}",
+                         style={"color": TEXT_MUTED, "fontSize": "12px",
+                                "fontFamily": FONT, "marginBottom": "6px"}),
+                html.Div("Full radar requires 3+ stats · only Big 5 leagues report all metrics via FBref",
+                         style={"color": TEXT_MUTED, "fontSize": "11px", "fontFamily": FONT}),
+            ], style={"background": BG_CARD2, "borderRadius": "8px", "padding": "20px",
+                      "border": f"1px solid {AMBER}33", "marginTop": "8px"}),
+        ], style=CARD)
 
     ahly_at_pos = SQUAD[SQUAD["position_group"] == pos]
     if len(ahly_at_pos) > 0:
@@ -1298,7 +1317,8 @@ def _profile_content(player_name, shortlist):
                 ahly_str = f"€{ahly_val:.2f}m" if pd.notna(ahly_val) else "–"
             elif col == "adjusted_scouting_score":
                 tgt_str  = f"{tgt_val:.1f}" if pd.notna(tgt_val) else "–"
-                ahly_str = "N/A (no Big 5 data)"
+                raw_score = pd.to_numeric(ahly_p.get("raw_scouting_score"), errors="coerce")
+                ahly_str  = f"{raw_score:.1f}" if pd.notna(raw_score) and raw_score > 0 else "–"
             else:
                 tgt_str  = str(int(tgt_val))  if pd.notna(tgt_val)  else "–"
                 ahly_str = str(int(ahly_val)) if pd.notna(ahly_val) else "–"
