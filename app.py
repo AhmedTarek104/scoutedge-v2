@@ -1178,54 +1178,86 @@ def _profile_content(player_name, shortlist):
         ], align="center"),
     ], style={**CARD, "marginBottom": "16px"})
 
-    metrics = RADAR_METRICS.get(pos, [])
-    pos_df  = DF[DF["position_group"] == pos]
+    metrics      = RADAR_METRICS.get(pos, [])
+    pos_df       = DF[DF["position_group"] == pos]
+    n_leagues    = DF["league_clean"].nunique()
+    player_league = str(r.get("league_clean", ""))
+
     stat_bars = []
     for label, col in metrics:
-        if col not in r.index or col not in DF.columns:
-            continue
-        val_num = pd.to_numeric(r[col], errors="coerce")
-        if pd.isna(val_num):
-            continue
-        pct = pct_rank(val_num, pos_df[col])
-        bar_color = (RED + "88" if pct <= 33 else AMBER + "88" if pct <= 66 else GREEN + "88")
-        stat_bars.append(html.Div([
-            dbc.Row([
-                dbc.Col(html.Div(label, style={"color": TEXT, "fontSize": "12px",
-                                               "fontFamily": FONT, "fontWeight": "500"}), width=4),
-                dbc.Col(html.Div(f"{val_num:.2f}", style={"color": TEXT_MUTED, "fontSize": "11px",
-                                                           "fontFamily": FONT, "textAlign": "right"}), width=2),
-                dbc.Col(html.Div([html.Div(style={"width": f"{pct}%", "height": "8px",
-                                                   "background": bar_color, "borderRadius": "4px",
-                                                   "transition": "width 0.3s"})],
-                                 style={"background": BORDER, "borderRadius": "4px", "overflow": "hidden"}), width=4),
-                dbc.Col(html.Div(f"Top {100-int(pct)}%", style={"color": TEXT_MUTED, "fontSize": "10px",
-                                                                  "fontFamily": FONT, "textAlign": "right"}), width=2),
-            ], align="center", className="mb-1"),
-        ]))
+        # Always render every stat in the position template — show "no data" when missing
+        has_data = (col in DF.columns and col in r.index and
+                    pd.notna(pd.to_numeric(r.get(col), errors="coerce")))
 
+        if has_data:
+            val_num   = pd.to_numeric(r[col], errors="coerce")
+            pct       = pct_rank(val_num, pos_df[col])
+            bar_color = (RED + "88" if pct <= 33 else AMBER + "88" if pct <= 66 else GREEN + "88")
+            stat_bars.append(html.Div([
+                dbc.Row([
+                    dbc.Col(html.Div(label, style={"color": TEXT, "fontSize": "12px",
+                                                   "fontFamily": FONT, "fontWeight": "500"}), width=4),
+                    dbc.Col(html.Div(f"{val_num:.2f}", style={"color": TEXT_MUTED, "fontSize": "11px",
+                                                               "fontFamily": FONT, "textAlign": "right"}), width=2),
+                    dbc.Col(html.Div([html.Div(style={"width": f"{pct}%", "height": "8px",
+                                                       "background": bar_color, "borderRadius": "4px",
+                                                       "transition": "width 0.3s"})],
+                                     style={"background": BORDER, "borderRadius": "4px", "overflow": "hidden"}), width=4),
+                    dbc.Col(html.Div(f"Top {100-int(pct)}%", style={"color": TEXT_MUTED, "fontSize": "10px",
+                                                                      "fontFamily": FONT, "textAlign": "right"}), width=2),
+                ], align="center", className="mb-1"),
+            ]))
+        else:
+            # No data for this stat in this player's league — show placeholder row
+            stat_bars.append(html.Div([
+                dbc.Row([
+                    dbc.Col(html.Div(label, style={"color": TEXT_MUTED, "fontSize": "12px",
+                                                   "fontFamily": FONT, "fontWeight": "500"}), width=4),
+                    dbc.Col(html.Div("–", style={"color": TEXT_MUTED, "fontSize": "11px",
+                                                  "fontFamily": FONT, "textAlign": "right"}), width=2),
+                    dbc.Col(html.Div([],  # empty grey track
+                                     style={"background": BORDER, "borderRadius": "4px",
+                                            "height": "8px", "overflow": "hidden"}), width=4),
+                    dbc.Col(html.Div("no data", style={"color": TEXT_MUTED, "fontSize": "10px",
+                                                        "fontFamily": FONT, "textAlign": "right",
+                                                        "fontStyle": "italic"}), width=2),
+                ], align="center", className="mb-1"),
+            ]))
+
+    peer_subtitle = f"vs all {pos} peers  ·  {n_leagues} leagues"
     stat_panel = html.Div([
         html.H6("Performance Profile", style={"color": TEXT, "fontWeight": "600",
                                                "fontFamily": FONT, "marginBottom": "2px"}),
-        html.Div(f"vs {pos} peers in Big 5 leagues",
+        html.Div(peer_subtitle,
                  style={"color": TEXT_MUTED, "fontSize": "11px", "fontFamily": FONT, "marginBottom": "12px"}),
         *stat_bars,
     ], style=CARD)
 
     radar_metrics = RADAR_METRICS.get(pos, [])
-    r_labels = [lbl for lbl, col in radar_metrics if col in DF.columns]
-    r_values = []
+    # Only plot axes where this player actually has data — avoids misleading
+    # "Top 50%" fallback for stats not measured in their league.
+    r_labels, r_values = [], []
     for lbl, col in radar_metrics:
         if col not in DF.columns:
             continue
-        r_values.append(pct_rank(pd.to_numeric(r[col], errors="coerce"), pos_df[col]))
+        val_num = pd.to_numeric(r.get(col), errors="coerce")
+        if pd.isna(val_num):
+            continue
+        r_labels.append(lbl)
+        r_values.append(pct_rank(val_num, pos_df[col]))
 
     fig_radar = go.Figure()
     if r_labels and r_values:
+        closed_r      = r_values + [r_values[0]]
+        closed_theta  = r_labels + [r_labels[0]]
         fig_radar.add_trace(go.Scatterpolar(
-            r=r_values + [r_values[0]], theta=r_labels + [r_labels[0]],
-            fill="toself", fillcolor="rgba(204,0,0,0.2)",
-            line=dict(color=RED, width=2), name=player_name,
+            r=closed_r,
+            theta=closed_theta,
+            fill="toself",
+            fillcolor="rgba(204,0,0,0.2)",
+            line=dict(color=RED, width=2),
+            name=player_name,
+            hovertemplate="<b>%{theta}</b><br>Percentile: Top %{r:.0f}%<extra></extra>",
         ))
     fig_radar.update_layout(
         **CHART_DEFAULTS,
@@ -1233,12 +1265,15 @@ def _profile_content(player_name, shortlist):
                    radialaxis=dict(visible=True, range=[0, 100],
                                    tickfont=dict(size=8, color=TEXT_MUTED), gridcolor=BORDER),
                    angularaxis=dict(tickfont=dict(size=10, color=TEXT))),
-        showlegend=True, legend=dict(x=0, y=1.1, font=dict(size=10, color=TEXT)), height=320,
+        showlegend=True,
+        legend=dict(x=0, y=1.1, font=dict(size=10, color=TEXT)),
+        height=320,
+        hoverlabel=dict(bgcolor="#1A1A1A", font_size=13, font_color="#F5F5F5"),
     )
     radar_panel = html.Div([
         html.H6("Radar Chart", style={"color": TEXT, "fontWeight": "600",
                                        "fontFamily": FONT, "marginBottom": "2px"}),
-        html.Div(f"Percentile vs {pos} peers",
+        html.Div(f"Percentile vs all {pos} peers  ·  available stats only",
                  style={"color": TEXT_MUTED, "fontSize": "11px", "fontFamily": FONT, "marginBottom": "8px"}),
         dcc.Graph(figure=fig_radar, config={"displayModeBar": False}),
     ], style=CARD)
