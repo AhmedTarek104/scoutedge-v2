@@ -223,6 +223,29 @@ def pct_rank(value, series):
         return 50
     return round(float((clean < value).mean() * 100), 1)
 
+def stat_coverage(r, pos):
+    """Return (available, total) non-null stat counts for a player vs their position template."""
+    metrics = RADAR_METRICS.get(pos, [])
+    total   = len(metrics)
+    avail   = sum(
+        1 for _, col in metrics
+        if col in DF.columns and pd.notna(pd.to_numeric(r.get(col), errors="coerce"))
+    )
+    return avail, total
+
+def coverage_badge(avail, total):
+    """Return a styled badge html element for data coverage."""
+    label = f"({avail}/{total} stats)"
+    if avail >= 4:
+        return badge(f"Full Profile {label}", GREEN, GREEN + "22")
+    if avail == 3:
+        return badge(f"Good Profile {label}", AMBER, AMBER + "22")
+    return badge(f"Limited Data {label}", RED, RED + "22")
+
+def coverage_dots(avail, total):
+    """Return filled/empty dot string e.g. '⬤⬤⬤○○'."""
+    return "⬤" * avail + "○" * (total - avail)
+
 def age_color(age):
     if age >= 30:
         return RED
@@ -1146,9 +1169,14 @@ def _profile_content(player_name, shortlist):
     shortlist_names = [p["player"] for p in (shortlist or [])]
     star_label = "★ In Shortlist" if player_name in shortlist_names else "☆ Add to Shortlist"
 
-    mv_badge  = badge(f"€{mv:.2f}m" if pd.notna(mv) else "–", BLUE, BLUE + "22")
-    exp_badge = badge("⚡ Expiring", AMBER, AMBER + "22") if exp else None
-    badges    = [mv_badge] + ([html.Span(" "), exp_badge] if exp_badge else [])
+    avail, total = stat_coverage(r, pos)
+
+    mv_badge   = badge(f"€{mv:.2f}m" if pd.notna(mv) else "–", BLUE, BLUE + "22")
+    exp_badge  = badge("⚡ Expiring", AMBER, AMBER + "22") if exp else None
+    cov_badge  = coverage_badge(avail, total)
+    badges     = [mv_badge, html.Span(" "), cov_badge]
+    if exp_badge:
+        badges += [html.Span(" "), exp_badge]
 
     header = html.Div([
         dbc.Row([
@@ -1295,6 +1323,12 @@ def _profile_content(player_name, shortlist):
                          style={"color": TEXT_MUTED, "fontSize": "11px", "fontFamily": FONT}),
             ], style={"background": BG_CARD2, "borderRadius": "8px", "padding": "20px",
                       "border": f"1px solid {AMBER}33", "marginTop": "8px"}),
+            html.P(
+                f"Advanced stats for {player_league} require Opta or StatsBomb data. "
+                f"Contact us to discuss a data partnership.",
+                style={"color": TEXT_MUTED, "fontSize": "11px", "fontStyle": "italic",
+                       "fontFamily": FONT, "marginTop": "10px", "marginBottom": "0"},
+            ),
         ], style=CARD)
 
     ahly_at_pos = SQUAD[SQUAD["position_group"] == pos]
@@ -1316,7 +1350,8 @@ def _profile_content(player_name, shortlist):
                 tgt_str  = f"€{tgt_val:.2f}m"  if pd.notna(tgt_val)  else "–"
                 ahly_str = f"€{ahly_val:.2f}m" if pd.notna(ahly_val) else "–"
             elif col == "adjusted_scouting_score":
-                tgt_str  = f"{tgt_val:.1f}" if pd.notna(tgt_val) else "–"
+                score_str = f"{tgt_val:.1f}" if pd.notna(tgt_val) else "–"
+                tgt_str   = f"{score_str}*" if avail <= 2 and score_str != "–" else score_str
                 raw_score = pd.to_numeric(ahly_p.get("raw_scouting_score"), errors="coerce")
                 ahly_str  = f"{raw_score:.1f}" if pd.notna(raw_score) and raw_score > 0 else "–"
             else:
@@ -1329,10 +1364,17 @@ def _profile_content(player_name, shortlist):
             style_header=TBL_HEADER,
             style_cell={**TBL_CELL, "fontSize": "12px", "textAlign": "center"},
         )
+        score_footnote = (
+            [html.P(f"* Score based on limited data ({avail} stats)",
+                    style={"color": TEXT_MUTED, "fontSize": "10px", "fontStyle": "italic",
+                           "fontFamily": FONT, "marginTop": "4px", "marginBottom": "0"})]
+            if avail <= 2 else []
+        )
         vs_panel = html.Div([
             html.H6(f"{player_name} vs {ahly_name}",
                     style={"color": TEXT, "fontWeight": "600", "fontFamily": FONT, "marginBottom": "8px"}),
             comp_tbl,
+            *score_footnote,
             html.Div(style={"height": "10px"}),
             html.Div([badge(verdict_txt, verdict_color, verdict_color + "22")],
                      style={"textAlign": "center"}),
@@ -1383,12 +1425,21 @@ def _profile_content(player_name, shortlist):
             style_data_conditional=[{"if": {"row_index": "odd"}, "background": BG_CARD2}],
         )
 
+    # CHANGE 3: context note about similarity precision
+    sim_note = html.P(
+        f"Similarity based on {avail} available stat{'s' if avail != 1 else ''}. "
+        f"More stats = more precise matching.",
+        style={"color": TEXT_MUTED, "fontSize": "11px", "fontStyle": "italic",
+               "fontFamily": FONT, "marginTop": "8px", "marginBottom": "0"},
+    )
+
     row2 = html.Div([
         html.H6("Most Similar Players",
                 style={"color": TEXT, "fontWeight": "600", "fontFamily": FONT, "marginBottom": "2px"}),
         html.Div(f"Same position ({pos}) · Target leagues · click ★ to shortlist",
                  style={"color": TEXT_MUTED, "fontSize": "11px", "fontFamily": FONT, "marginBottom": "10px"}),
         sim_section,
+        sim_note,
     ], style=CARD)
 
     return html.Div([header, row1, row2])
@@ -1565,11 +1616,14 @@ def update_discovery(apply_n, reset_n, pos, leagues, max_age, max_mv, min_mins,
 
     shortlist_names = [p["player"] for p in (shortlist or [])]
 
+    _total_stats = len(RADAR_METRICS.get(pos, []))
+
     table_data = []
     for _, r in df.iterrows():
         star = "★" if r["player"] in shortlist_names else "☆"
         mv_str = f"€{r['market_value_m']:.2f}m" if pd.notna(r["market_value_m"]) else "–"
         contract_ico = "⚡" if r.get("contract_expiring") else ""
+        r_avail, _ = stat_coverage(r, pos)
         row = {
             "★":       star,
             "Player":  r["player"],
@@ -1580,6 +1634,7 @@ def update_discovery(apply_n, reset_n, pos, leagues, max_age, max_mv, min_mins,
             "MV (€m)": mv_str,
             "Raw":     round(float(r["raw_scouting_score"]), 1) if pd.notna(r["raw_scouting_score"]) else "–",
             "Score":   round(float(r["adjusted_scouting_score"]), 1) if pd.notna(r["adjusted_scouting_score"]) else "–",
+            "Data":    coverage_dots(r_avail, _total_stats),
             "Exp":     contract_ico,
         }
         if tact_col and tact_series is not None:
@@ -1591,7 +1646,7 @@ def update_discovery(apply_n, reset_n, pos, leagues, max_age, max_mv, min_mins,
                 row["Profile%"] = "–"
         table_data.append(row)
 
-    _col_names = ["★", "Player", "Club", "League", "Age", "Pos", "MV (€m)", "Raw", "Score"]
+    _col_names = ["★", "Player", "Club", "League", "Age", "Pos", "MV (€m)", "Raw", "Score", "Data"]
     if tact_col:
         _col_names.append("Profile%")
     _col_names.append("Exp")
@@ -1615,6 +1670,8 @@ def update_discovery(apply_n, reset_n, pos, leagues, max_age, max_mv, min_mins,
             {"if": {"column_id": "Pos"},     "width": "40px", "textAlign": "center"},
             {"if": {"column_id": "Raw"},     "width": "55px", "textAlign": "center"},
             {"if": {"column_id": "Score"},   "width": "55px", "textAlign": "center"},
+            {"if": {"column_id": "Data"},    "width": "75px", "textAlign": "center",
+             "fontSize": "10px", "letterSpacing": "1px", "color": TEXT_MUTED},
             {"if": {"column_id": "Profile%"},"width": "65px", "textAlign": "center",
              "color": AMBER, "fontWeight": "700"},
             {"if": {"column_id": "Exp"},     "width": "30px", "textAlign": "center",
