@@ -1120,17 +1120,242 @@ app.layout = html.Div([
 
 # ── Callbacks ─────────────────────────────────────────────────────────────────
 
+# ── Profile content helper (shared by render_tab and render_profile) ──────────
+
+def _profile_content(player_name, shortlist):
+    """Build the full player profile card content.  Called from both render_tab
+    (when the tab first opens) and render_profile (when selected-player changes
+    while already on the profile tab) so there is no race condition between the
+    two callbacks fighting over t3-body."""
+    if not player_name:
+        return html.P("Click a player row in Player Discovery to view their full profile.",
+                      style={"color": TEXT_MUTED, "textAlign": "center",
+                             "padding": "80px 0", "fontSize": "15px",
+                             "fontFamily": FONT})
+
+    pr = DF[DF["player"] == player_name]
+    if pr.empty:
+        return html.P(f"Player '{player_name}' not found in database.",
+                      style={"color": TEXT_MUTED, "textAlign": "center",
+                             "padding": "80px 0", "fontFamily": FONT})
+    r   = pr.iloc[0]
+    pos = str(r.get("position_group", ""))
+    mv  = r.get("market_value_m")
+    exp = bool(r.get("contract_expiring", False))
+
+    shortlist_names = [p["player"] for p in (shortlist or [])]
+    star_label = "★ In Shortlist" if player_name in shortlist_names else "☆ Add to Shortlist"
+
+    mv_badge  = badge(f"€{mv:.2f}m" if pd.notna(mv) else "–", BLUE, BLUE + "22")
+    exp_badge = badge("⚡ Expiring", AMBER, AMBER + "22") if exp else None
+    badges    = [mv_badge] + ([html.Span(" "), exp_badge] if exp_badge else [])
+
+    header = html.Div([
+        dbc.Row([
+            dbc.Col([
+                html.H3(player_name, style={"color": TEXT, "fontWeight": "700",
+                                            "fontFamily": FONT, "marginBottom": "4px"}),
+                html.Div([
+                    html.Span(f"{r.get('team', '–')}  ·  ", style={"color": TEXT_MUTED, "fontFamily": FONT}),
+                    html.Span(f"{r.get('league_clean', '–')}  ·  ", style={"color": TEXT_MUTED, "fontFamily": FONT}),
+                    html.Span(f"Age {int(r['age']) if pd.notna(r['age']) else '–'}  ·  ", style={"color": TEXT_MUTED, "fontFamily": FONT}),
+                    html.Span(str(r.get("nationality", "–")), style={"color": TEXT_MUTED, "fontFamily": FONT}),
+                ], style={"marginBottom": "8px"}),
+                html.Div(badges),
+            ]),
+            dbc.Col([
+                html.Button(star_label, id="t3-shortlist-btn",
+                            **{"data-player": player_name},
+                            n_clicks=0,
+                            style={
+                                "background": BG_CARD2, "color": AMBER,
+                                "border": f"1px solid {AMBER}",
+                                "borderRadius": "6px", "padding": "8px 16px",
+                                "cursor": "pointer", "fontFamily": FONT,
+                                "fontWeight": "600", "fontSize": "13px",
+                            }),
+            ], width="auto", style={"display": "flex", "alignItems": "center"}),
+        ], align="center"),
+    ], style={**CARD, "marginBottom": "16px"})
+
+    metrics = RADAR_METRICS.get(pos, [])
+    pos_df  = DF[DF["position_group"] == pos]
+    stat_bars = []
+    for label, col in metrics:
+        if col not in r.index or col not in DF.columns:
+            continue
+        val_num = pd.to_numeric(r[col], errors="coerce")
+        if pd.isna(val_num):
+            continue
+        pct = pct_rank(val_num, pos_df[col])
+        bar_color = (RED + "88" if pct <= 33 else AMBER + "88" if pct <= 66 else GREEN + "88")
+        stat_bars.append(html.Div([
+            dbc.Row([
+                dbc.Col(html.Div(label, style={"color": TEXT, "fontSize": "12px",
+                                               "fontFamily": FONT, "fontWeight": "500"}), width=4),
+                dbc.Col(html.Div(f"{val_num:.2f}", style={"color": TEXT_MUTED, "fontSize": "11px",
+                                                           "fontFamily": FONT, "textAlign": "right"}), width=2),
+                dbc.Col(html.Div([html.Div(style={"width": f"{pct}%", "height": "8px",
+                                                   "background": bar_color, "borderRadius": "4px",
+                                                   "transition": "width 0.3s"})],
+                                 style={"background": BORDER, "borderRadius": "4px", "overflow": "hidden"}), width=4),
+                dbc.Col(html.Div(f"Top {100-int(pct)}%", style={"color": TEXT_MUTED, "fontSize": "10px",
+                                                                  "fontFamily": FONT, "textAlign": "right"}), width=2),
+            ], align="center", className="mb-1"),
+        ]))
+
+    stat_panel = html.Div([
+        html.H6("Performance Profile", style={"color": TEXT, "fontWeight": "600",
+                                               "fontFamily": FONT, "marginBottom": "2px"}),
+        html.Div(f"vs {pos} peers in Big 5 leagues",
+                 style={"color": TEXT_MUTED, "fontSize": "11px", "fontFamily": FONT, "marginBottom": "12px"}),
+        *stat_bars,
+    ], style=CARD)
+
+    radar_metrics = RADAR_METRICS.get(pos, [])
+    r_labels = [lbl for lbl, col in radar_metrics if col in DF.columns]
+    r_values = []
+    for lbl, col in radar_metrics:
+        if col not in DF.columns:
+            continue
+        r_values.append(pct_rank(pd.to_numeric(r[col], errors="coerce"), pos_df[col]))
+
+    fig_radar = go.Figure()
+    if r_labels and r_values:
+        fig_radar.add_trace(go.Scatterpolar(
+            r=r_values + [r_values[0]], theta=r_labels + [r_labels[0]],
+            fill="toself", fillcolor="rgba(204,0,0,0.2)",
+            line=dict(color=RED, width=2), name=player_name,
+        ))
+    fig_radar.update_layout(
+        **CHART_DEFAULTS,
+        polar=dict(bgcolor=BG_CARD2,
+                   radialaxis=dict(visible=True, range=[0, 100],
+                                   tickfont=dict(size=8, color=TEXT_MUTED), gridcolor=BORDER),
+                   angularaxis=dict(tickfont=dict(size=10, color=TEXT))),
+        showlegend=True, legend=dict(x=0, y=1.1, font=dict(size=10, color=TEXT)), height=320,
+    )
+    radar_panel = html.Div([
+        html.H6("Radar Chart", style={"color": TEXT, "fontWeight": "600",
+                                       "fontFamily": FONT, "marginBottom": "2px"}),
+        html.Div(f"Percentile vs {pos} peers",
+                 style={"color": TEXT_MUTED, "fontSize": "11px", "fontFamily": FONT, "marginBottom": "8px"}),
+        dcc.Graph(figure=fig_radar, config={"displayModeBar": False}),
+    ], style=CARD)
+
+    ahly_at_pos = SQUAD[SQUAD["position_group"] == pos]
+    if len(ahly_at_pos) > 0:
+        ahly_p    = ahly_at_pos.iloc[0]
+        ahly_name = ahly_p["player"]
+        ahly_mv   = ahly_p.get("market_value_m")
+        target_score = float(r["adjusted_scouting_score"]) if pd.notna(r["adjusted_scouting_score"]) else 0
+        verdict_txt, verdict_color = (
+            ("POTENTIAL UPGRADE", GREEN) if target_score >= 70 else
+            ("SIMILAR LEVEL",    AMBER)  if target_score >= 50 else
+            ("BELOW THRESHOLD",  RED)
+        )
+        comp_rows = []
+        for lbl, col in [("Score", "adjusted_scouting_score"), ("Age", "age"), ("Value", "market_value_m")]:
+            tgt_val  = r.get(col)
+            ahly_val = ahly_p.get(col)
+            if col == "market_value_m":
+                tgt_str  = f"€{tgt_val:.2f}m"  if pd.notna(tgt_val)  else "–"
+                ahly_str = f"€{ahly_val:.2f}m" if pd.notna(ahly_val) else "–"
+            elif col == "adjusted_scouting_score":
+                tgt_str  = f"{tgt_val:.1f}" if pd.notna(tgt_val) else "–"
+                ahly_str = "N/A (no Big 5 data)"
+            else:
+                tgt_str  = str(int(tgt_val))  if pd.notna(tgt_val)  else "–"
+                ahly_str = str(int(ahly_val)) if pd.notna(ahly_val) else "–"
+            comp_rows.append({"Metric": lbl, "Target": tgt_str, "Al Ahly": ahly_str})
+        comp_tbl = dash_table.DataTable(
+            data=comp_rows,
+            columns=[{"name": c, "id": c} for c in ["Metric", "Target", "Al Ahly"]],
+            style_header=TBL_HEADER,
+            style_cell={**TBL_CELL, "fontSize": "12px", "textAlign": "center"},
+        )
+        vs_panel = html.Div([
+            html.H6(f"{player_name} vs {ahly_name}",
+                    style={"color": TEXT, "fontWeight": "600", "fontFamily": FONT, "marginBottom": "8px"}),
+            comp_tbl,
+            html.Div(style={"height": "10px"}),
+            html.Div([badge(verdict_txt, verdict_color, verdict_color + "22")],
+                     style={"textAlign": "center"}),
+        ], style=CARD)
+    else:
+        vs_panel = html.Div([
+            html.H6("vs Al Ahly", style={"color": TEXT, "fontWeight": "600",
+                                         "fontFamily": FONT, "marginBottom": "8px"}),
+            html.P(f"No current Al Ahly player at {pos}.",
+                   style={"color": TEXT_MUTED, "fontSize": "12px", "fontFamily": FONT}),
+            html.P("This would be a new addition to the squad.",
+                   style={"color": TEXT_MUTED, "fontSize": "12px", "fontFamily": FONT}),
+        ], style=CARD)
+
+    row1 = dbc.Row([
+        dbc.Col(stat_panel, md=4), dbc.Col(radar_panel, md=4), dbc.Col(vs_panel, md=4),
+    ], className="g-3", style={"marginBottom": "16px"})
+
+    try:
+        sim_df = get_similar_players(player_name, DF, MATRICES, n=8, target_leagues_only=True)
+    except Exception:
+        sim_df = pd.DataFrame()
+
+    if sim_df.empty:
+        sim_section = html.P("No similar players found.", style={"color": TEXT_MUTED, "fontFamily": FONT})
+    else:
+        sim_data = []
+        for _, sr in sim_df.iterrows():
+            smv = sr.get("market_value_m")
+            sim_data.append({
+                "★": "☆", "Player": sr["player"], "Club": sr.get("team", ""),
+                "League": sr.get("league_clean", ""),
+                "Age":    int(sr["age"]) if pd.notna(sr["age"]) else "–",
+                "MV (€m)": f"€{smv:.2f}m" if pd.notna(smv) else "–",
+                "Sim%":   f"{sr['similarity_pct']:.0f}%",
+                "Score":  round(float(sr["adjusted_scouting_score"]), 1) if pd.notna(sr.get("adjusted_scouting_score")) else "–",
+            })
+        sim_section = dash_table.DataTable(
+            data=sim_data,
+            columns=[{"name": c, "id": c} for c in ["★", "Player", "Club", "League", "Age", "MV (€m)", "Sim%", "Score"]],
+            style_header=TBL_HEADER,
+            style_cell={**TBL_CELL, "fontSize": "12px", "textAlign": "left"},
+            style_cell_conditional=[
+                {"if": {"column_id": "★"},    "width": "28px", "textAlign": "center",
+                 "color": AMBER, "cursor": "pointer"},
+                {"if": {"column_id": "Sim%"}, "textAlign": "center", "fontWeight": "700"},
+            ],
+            style_data_conditional=[{"if": {"row_index": "odd"}, "background": BG_CARD2}],
+        )
+
+    row2 = html.Div([
+        html.H6("Most Similar Players",
+                style={"color": TEXT, "fontWeight": "600", "fontFamily": FONT, "marginBottom": "2px"}),
+        html.Div(f"Same position ({pos}) · Target leagues · click ★ to shortlist",
+                 style={"color": TEXT_MUTED, "fontSize": "11px", "fontFamily": FONT, "marginBottom": "10px"}),
+        sim_section,
+    ], style=CARD)
+
+    return html.Div([header, row1, row2])
+
+
 @app.callback(
     Output("tab-content", "children"),
     Input("main-tabs", "value"),
+    [State("selected-player", "data"),
+     State("shortlist-store",  "data")],
 )
-def render_tab(tab):
+def render_tab(tab, player_name, shortlist):
     if tab == "tab-squad":
         return build_tab1()
     if tab == "tab-discovery":
         return build_tab2()
     if tab == "tab-profile":
-        return build_tab3()
+        # Render profile inline so t3-body content arrives with the tab switch,
+        # eliminating the race condition vs the render_profile callback.
+        return html.Div([
+            html.Div(id="t3-body", children=_profile_content(player_name, shortlist)),
+        ], style={"padding": "16px"})
     if tab == "tab-shortlist":
         return build_tab4()
     if tab == "tab-replacement":
@@ -1434,283 +1659,21 @@ def export_csv(n, table_data):
     return dcc.send_data_frame(df_exp.to_csv, "scoutedge_results.csv", index=False)
 
 # Tab 3 — render player profile
+# Uses _profile_content() so the same rendering logic is shared with render_tab.
+# Only depends on selected-player (not main-tabs) so it handles the case where
+# selected-player changes while the profile tab is already open, without racing
+# against render_tab (which renders the profile on the initial tab switch).
 @app.callback(
     Output("t3-body", "children"),
-    [Input("selected-player", "data"),
-     Input("main-tabs",       "value")],
-    State("shortlist-store", "data"),
+    Input("selected-player", "data"),
+    [State("main-tabs",       "value"),
+     State("shortlist-store", "data")],
     prevent_initial_call=True,
 )
 def render_profile(player_name, tab, shortlist):
     if tab != "tab-profile":
         return no_update
-    if not player_name:
-        return html.P("No player selected.",
-                      style={"color": TEXT_MUTED, "textAlign": "center",
-                             "padding": "80px 0", "fontFamily": FONT})
-
-    pr = DF[DF["player"] == player_name]
-    if pr.empty:
-        return html.P(f"Player '{player_name}' not found in database.",
-                      style={"color": TEXT_MUTED, "textAlign": "center",
-                             "padding": "80px 0", "fontFamily": FONT})
-    r   = pr.iloc[0]
-    pos = str(r.get("position_group", ""))
-    mv  = r.get("market_value_m")
-    exp = bool(r.get("contract_expiring", False))
-
-    shortlist_names = [p["player"] for p in (shortlist or [])]
-    star_label = "★ In Shortlist" if player_name in shortlist_names else "☆ Add to Shortlist"
-
-    # Header
-    mv_badge = badge(f"€{mv:.2f}m" if pd.notna(mv) else "–", BLUE, BLUE + "22")
-    exp_badge = badge("⚡ Expiring", AMBER, AMBER + "22") if exp else None
-
-    badges = [mv_badge]
-    if exp_badge:
-        badges += [html.Span(" "), exp_badge]
-
-    header = html.Div([
-        dbc.Row([
-            dbc.Col([
-                html.H3(player_name, style={"color": TEXT, "fontWeight": "700",
-                                            "fontFamily": FONT, "marginBottom": "4px"}),
-                html.Div([
-                    html.Span(f"{r.get('team', '–')}  ·  ", style={"color": TEXT_MUTED, "fontFamily": FONT}),
-                    html.Span(f"{r.get('league_clean', '–')}  ·  ", style={"color": TEXT_MUTED, "fontFamily": FONT}),
-                    html.Span(f"Age {int(r['age']) if pd.notna(r['age']) else '–'}  ·  ", style={"color": TEXT_MUTED, "fontFamily": FONT}),
-                    html.Span(str(r.get("nationality", "–")), style={"color": TEXT_MUTED, "fontFamily": FONT}),
-                ], style={"marginBottom": "8px"}),
-                html.Div(badges),
-            ]),
-            dbc.Col([
-                html.Button(star_label, id="t3-shortlist-btn",
-                            **{"data-player": player_name},
-                            n_clicks=0,
-                            style={
-                                "background": BG_CARD2, "color": AMBER,
-                                "border": f"1px solid {AMBER}",
-                                "borderRadius": "6px", "padding": "8px 16px",
-                                "cursor": "pointer", "fontFamily": FONT,
-                                "fontWeight": "600", "fontSize": "13px",
-                            }),
-            ], width="auto", style={"display": "flex", "alignItems": "center"}),
-        ], align="center"),
-    ], style={**CARD, "marginBottom": "16px"})
-
-    # Stat bars
-    metrics = RADAR_METRICS.get(pos, [])
-    pos_df  = DF[DF["position_group"] == pos]
-    stat_bars = []
-    for label, col in metrics:
-        if col not in r.index or col not in DF.columns:
-            continue
-        val_num = pd.to_numeric(r[col], errors="coerce")
-        if pd.isna(val_num):
-            continue
-        pct = pct_rank(val_num, pos_df[col])
-        if pct <= 33:
-            bar_color = RED + "88"
-        elif pct <= 66:
-            bar_color = AMBER + "88"
-        else:
-            bar_color = GREEN + "88"
-        stat_bars.append(html.Div([
-            dbc.Row([
-                dbc.Col(html.Div(label,
-                                 style={"color": TEXT, "fontSize": "12px",
-                                        "fontFamily": FONT, "fontWeight": "500"}), width=4),
-                dbc.Col(html.Div(f"{val_num:.2f}", style={"color": TEXT_MUTED,
-                                                            "fontSize": "11px",
-                                                            "fontFamily": FONT,
-                                                            "textAlign": "right"}), width=2),
-                dbc.Col(html.Div([
-                    html.Div(style={
-                        "width": f"{pct}%", "height": "8px",
-                        "background": bar_color, "borderRadius": "4px",
-                        "transition": "width 0.3s",
-                    }),
-                ], style={"background": BORDER, "borderRadius": "4px", "overflow": "hidden"}), width=4),
-                dbc.Col(html.Div(f"Top {100-int(pct)}%",
-                                 style={"color": TEXT_MUTED, "fontSize": "10px",
-                                        "fontFamily": FONT, "textAlign": "right"}), width=2),
-            ], align="center", className="mb-1"),
-        ]))
-
-    stat_panel = html.Div([
-        html.H6("Performance Profile",
-                style={"color": TEXT, "fontWeight": "600", "fontFamily": FONT,
-                       "marginBottom": "2px"}),
-        html.Div(f"vs {pos} peers in Big 5 leagues",
-                 style={"color": TEXT_MUTED, "fontSize": "11px",
-                        "fontFamily": FONT, "marginBottom": "12px"}),
-        *stat_bars,
-    ], style=CARD)
-
-    # Radar chart
-    radar_metrics = RADAR_METRICS.get(pos, [])
-    r_labels = [lbl for lbl, col in radar_metrics if col in DF.columns]
-    r_values = []
-    for lbl, col in radar_metrics:
-        if col not in DF.columns:
-            continue
-        val_num = pd.to_numeric(r[col], errors="coerce")
-        r_values.append(pct_rank(val_num, pos_df[col]))
-
-    fig_radar = go.Figure()
-    if r_labels and r_values:
-        fig_radar.add_trace(go.Scatterpolar(
-            r=r_values + [r_values[0]],
-            theta=r_labels + [r_labels[0]],
-            fill="toself",
-            fillcolor=f"rgba(204,0,0,0.2)",
-            line=dict(color=RED, width=2),
-            name=player_name,
-        ))
-
-    fig_radar.update_layout(
-        **CHART_DEFAULTS,
-        polar=dict(
-            bgcolor=BG_CARD2,
-            radialaxis=dict(visible=True, range=[0, 100],
-                            tickfont=dict(size=8, color=TEXT_MUTED),
-                            gridcolor=BORDER),
-            angularaxis=dict(tickfont=dict(size=10, color=TEXT)),
-        ),
-        showlegend=True,
-        legend=dict(x=0, y=1.1, font=dict(size=10, color=TEXT)),
-        height=320,
-    )
-
-    radar_panel = html.Div([
-        html.H6("Radar Chart", style={"color": TEXT, "fontWeight": "600",
-                                       "fontFamily": FONT, "marginBottom": "2px"}),
-        html.Div(f"Percentile vs {pos} peers",
-                 style={"color": TEXT_MUTED, "fontSize": "11px",
-                        "fontFamily": FONT, "marginBottom": "8px"}),
-        dcc.Graph(figure=fig_radar, config={"displayModeBar": False}),
-    ], style=CARD)
-
-    # vs Al Ahly comparison
-    ahly_at_pos = SQUAD[SQUAD["position_group"] == pos]
-    if len(ahly_at_pos) > 0:
-        ahly_p = ahly_at_pos.iloc[0]
-        ahly_name = ahly_p["player"]
-        ahly_age  = int(ahly_p["age"]) if pd.notna(ahly_p["age"]) else "–"
-        ahly_mv   = ahly_p.get("market_value_m")
-        ahly_mv_str = f"€{ahly_mv:.2f}m" if pd.notna(ahly_mv) else "–"
-
-        target_score = float(r["adjusted_scouting_score"]) if pd.notna(r["adjusted_scouting_score"]) else 0
-        if target_score >= 70:
-            verdict_txt   = "POTENTIAL UPGRADE"
-            verdict_color = GREEN
-        elif target_score >= 50:
-            verdict_txt   = "SIMILAR LEVEL"
-            verdict_color = AMBER
-        else:
-            verdict_txt   = "BELOW THRESHOLD"
-            verdict_color = RED
-
-        comp_rows = []
-        for lbl, col in [("Score", "adjusted_scouting_score"),
-                          ("Age",   "age"),
-                          ("Value", "market_value_m")]:
-            tgt_val = r.get(col)
-            ahly_val = ahly_p.get(col)
-            if col == "market_value_m":
-                tgt_str  = f"€{tgt_val:.2f}m"  if pd.notna(tgt_val)  else "–"
-                ahly_str = f"€{ahly_val:.2f}m" if pd.notna(ahly_val) else "–"
-            elif col == "adjusted_scouting_score":
-                tgt_str  = f"{tgt_val:.1f}"  if pd.notna(tgt_val)  else "–"
-                ahly_str = "N/A (no Big 5 data)"
-            else:
-                tgt_str  = str(int(tgt_val))  if pd.notna(tgt_val)  else "–"
-                ahly_str = str(int(ahly_val)) if pd.notna(ahly_val) else "–"
-            comp_rows.append({"Metric": lbl, "Target": tgt_str, "Al Ahly": ahly_str})
-
-        comp_tbl = dash_table.DataTable(
-            data=comp_rows,
-            columns=[{"name": c, "id": c} for c in ["Metric", "Target", "Al Ahly"]],
-            style_header=TBL_HEADER,
-            style_cell={**TBL_CELL, "fontSize": "12px", "textAlign": "center"},
-        )
-        vs_panel = html.Div([
-            html.H6(f"{player_name} vs {ahly_name}",
-                    style={"color": TEXT, "fontWeight": "600",
-                           "fontFamily": FONT, "marginBottom": "8px"}),
-            comp_tbl,
-            html.Div(style={"height": "10px"}),
-            html.Div([
-                badge(verdict_txt, verdict_color, verdict_color + "22"),
-            ], style={"textAlign": "center"}),
-        ], style=CARD)
-    else:
-        vs_panel = html.Div([
-            html.H6(f"vs Al Ahly", style={"color": TEXT, "fontWeight": "600",
-                                           "fontFamily": FONT, "marginBottom": "8px"}),
-            html.P(f"No current Al Ahly player at {pos}.",
-                   style={"color": TEXT_MUTED, "fontSize": "12px", "fontFamily": FONT}),
-            html.P("This would be a new addition to the squad.",
-                   style={"color": TEXT_MUTED, "fontSize": "12px", "fontFamily": FONT}),
-        ], style=CARD)
-
-    row1 = dbc.Row([
-        dbc.Col(stat_panel,  md=4),
-        dbc.Col(radar_panel, md=4),
-        dbc.Col(vs_panel,    md=4),
-    ], className="g-3", style={"marginBottom": "16px"})
-
-    # Similar players
-    try:
-        sim_df = get_similar_players(player_name, DF, MATRICES, n=8,
-                                     target_leagues_only=True)
-    except Exception:
-        sim_df = pd.DataFrame()
-
-    if sim_df.empty:
-        sim_section = html.P("No similar players found.",
-                             style={"color": TEXT_MUTED, "fontFamily": FONT})
-    else:
-        sim_data = []
-        for _, sr in sim_df.iterrows():
-            smv = sr.get("market_value_m")
-            sim_data.append({
-                "★":         "☆",
-                "Player":    sr["player"],
-                "Club":      sr.get("team", ""),
-                "League":    sr.get("league_clean", ""),
-                "Age":       int(sr["age"]) if pd.notna(sr["age"]) else "–",
-                "MV (€m)":   f"€{smv:.2f}m" if pd.notna(smv) else "–",
-                "Sim%":      f"{sr['similarity_pct']:.0f}%",
-                "Score":     round(float(sr["adjusted_scouting_score"]), 1) if pd.notna(sr.get("adjusted_scouting_score")) else "–",
-            })
-        sim_section = dash_table.DataTable(
-            data=sim_data,
-            columns=[{"name": c, "id": c} for c in
-                     ["★", "Player", "Club", "League", "Age", "MV (€m)", "Sim%", "Score"]],
-            style_header=TBL_HEADER,
-            style_cell={**TBL_CELL, "fontSize": "12px", "textAlign": "left"},
-            style_cell_conditional=[
-                {"if": {"column_id": "★"}, "width": "28px", "textAlign": "center",
-                 "color": AMBER, "cursor": "pointer"},
-                {"if": {"column_id": "Sim%"}, "textAlign": "center", "fontWeight": "700"},
-            ],
-            style_data_conditional=[
-                {"if": {"row_index": "odd"}, "background": BG_CARD2},
-            ],
-        )
-
-    row2 = html.Div([
-        html.H6("Most Similar Players",
-                style={"color": TEXT, "fontWeight": "600",
-                       "fontFamily": FONT, "marginBottom": "2px"}),
-        html.Div(f"Same position ({pos}) · Target leagues · click ★ to shortlist",
-                 style={"color": TEXT_MUTED, "fontSize": "11px",
-                        "fontFamily": FONT, "marginBottom": "10px"}),
-        sim_section,
-    ], style=CARD)
-
-    return html.Div([header, row1, row2])
+    return _profile_content(player_name, shortlist)
 
 # Tab 3 — add/remove from shortlist via profile button
 @app.callback(
@@ -2021,33 +1984,23 @@ def find_replacements(n, player_name, budget, max_age, diff_league, tgt_only):
     rows = []
     for _, sr in res_df.iterrows():
         smv = sr.get("market_value_m")
-        cheaper = (ref_mv - smv) if (pd.notna(ref_mv) and pd.notna(smv)) else None
-        if cheaper is None:
-            cheaper_str = "–"
-        elif cheaper >= 0:
-            cheaper_str = f"€{cheaper:.2f}m cheaper"
-        else:
-            cheaper_str = f"€{abs(cheaper):.2f}m more"
-
         sim_pct = float(sr.get("similarity_pct", 0))
         rows.append({
-            "★":          "☆",
-            "Player":     sr["player"],
-            "Club":       sr.get("team", ""),
-            "League":     sr.get("league_clean", ""),
-            "Age":        int(sr["age"]) if pd.notna(sr["age"]) else "–",
-            "MV (€m)":    f"€{smv:.2f}m" if pd.notna(smv) else "–",
-            "Sim%":       f"{sim_pct:.0f}%",
-            "Score":      round(float(sr.get("adjusted_scouting_score", 0)), 1),
-            "Cheaper By": cheaper_str,
-            "Exp":        "⚡" if sr.get("contract_expiring") else "",
+            "★":       "☆",
+            "Player":  sr["player"],
+            "Club":    sr.get("team", ""),
+            "League":  sr.get("league_clean", ""),
+            "Age":     int(sr["age"]) if pd.notna(sr["age"]) else "–",
+            "MV (€m)": f"€{smv:.2f}m" if pd.notna(smv) else "–",
+            "Sim%":    f"{sim_pct:.0f}%",
+            "Score":   round(float(sr.get("adjusted_scouting_score", 0)), 1),
+            "Exp":     "⚡" if sr.get("contract_expiring") else "",
         })
 
     tbl = dash_table.DataTable(
         data=rows,
         columns=[{"name": c, "id": c} for c in
-                 ["★", "Player", "Club", "League", "Age", "MV (€m)",
-                  "Sim%", "Score", "Cheaper By", "Exp"]],
+                 ["★", "Player", "Club", "League", "Age", "MV (€m)", "Sim%", "Score", "Exp"]],
         style_header=TBL_HEADER,
         style_cell={**TBL_CELL, "textAlign": "left", "fontSize": "12px"},
         style_cell_conditional=[
@@ -2060,7 +2013,6 @@ def find_replacements(n, player_name, budget, max_age, diff_league, tgt_only):
             {"if": {"row_index": "odd"}, "background": BG_CARD2},
             {"if": {"filter_query": '{Sim%} contains "8" && {Sim%} != "–"'},
              "background": GREEN + "11"},
-            {"if": {"filter_query": '{Cheaper By} contains "cheaper"'}, "color": GREEN},
         ],
     )
 
