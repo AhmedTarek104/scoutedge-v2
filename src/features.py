@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
-from config import (DATA_PROC, DATA_FINAL, SCOUTING_WEIGHTS)
+from config import (DATA_PROC, DATA_FINAL, SCOUTING_WEIGHTS, LEAGUE_TIERS)
 
 TODAY = datetime.now()
 
@@ -66,6 +66,12 @@ def compute_efficiency(df):
         tk = pd.to_numeric(df["tackles"], errors="coerce")
         df["tackle_success_rate"] = (tw / tk.replace(0, np.nan) * 100).round(2)
 
+    # goals_per_shot — clinical finishing metric
+    if "goals" in df.columns and "shots" in df.columns:
+        g  = pd.to_numeric(df["goals"],  errors="coerce")
+        sh = pd.to_numeric(df["shots"],  errors="coerce")
+        df["goals_per_shot"] = (g / sh.replace(0, np.nan)).round(3)
+
     # pass_completion_rate and aerial_duels_won_pct already exist (from FBref)
     # Ensure they are numeric
     for col in ["pass_completion_rate", "aerial_duels_won_pct"]:
@@ -78,17 +84,20 @@ def compute_efficiency(df):
 # 4d. Scouting scores
 def compute_scouting_scores(df):
     """
-    Compute scouting scores with per-player weight redistribution.
+    Compute scouting scores with tier-based percentile ranks.
 
-    Percentile ranks are computed within each position_group across ALL leagues.
-    For features absent or NaN for a specific player (e.g. xg_p90 for non-Big-5),
-    that feature's weight is redistributed proportionally among the player's
-    available features — so Big-5 and non-Big-5 players are scored on the same
-    0-100 scale and are directly comparable.
+    Step 1: percentile rank is computed within (tier, position_group) so a
+            Danish striker is ranked against other Tier-3 strikers only.
+    Step 2: adjusted_score = raw_score * league_difficulty
+            (raw reflects tier-relative quality; adjusted penalises weaker leagues)
+    Step 3: missing features redistribute their weight to available ones per player.
     """
     df = df.copy()
     df["raw_scouting_score"]      = np.nan
     df["adjusted_scouting_score"] = np.nan
+
+    # Assign tier; default Tier 2 for unknown leagues
+    df["league_tier"] = df["league_clean"].map(LEAGUE_TIERS).fillna(2).astype(int)
 
     for pos_group, weights in SCOUTING_WEIGHTS.items():
         mask   = df["position_group"] == pos_group
@@ -96,26 +105,44 @@ def compute_scouting_scores(df):
         if len(pos_df) == 0:
             continue
 
-        # Step 1 — pre-compute percentile ranks for each feature across the
-        # whole position group (using all players with a non-NaN value).
-        # na_option="keep" leaves NaN players unranked (they'll be skipped
-        # per-player below rather than imputed with 50).
+        # Step 1 — tier-based percentile ranks for each feature
         pct_ranks = {}
-        for feat, wt in weights.items():
+        for feat in weights:
             if feat not in pos_df.columns:
                 continue
             series = pd.to_numeric(pos_df[feat], errors="coerce")
-            if series.var(skipna=True) > 0:
-                pct_ranks[feat] = series.rank(pct=True, na_option="keep") * 100
+            if series.isna().all():
+                continue
+
+            tier_pct = pd.Series(np.nan, index=pos_df.index, dtype=float)
+            for tier_val in sorted(pos_df["league_tier"].dropna().unique()):
+                tier_mask   = pos_df["league_tier"] == tier_val
+                tier_series = series[tier_mask]
+                n_valid     = tier_series.notna().sum()
+                if n_valid == 0:
+                    continue
+                if tier_series.var(skipna=True) > 0:
+                    tier_pct[tier_mask] = tier_series.rank(pct=True, na_option="keep") * 100
+                else:
+                    # All values identical in this tier → 50th percentile
+                    tier_pct[tier_mask] = tier_series.where(tier_series.notna()).apply(
+                        lambda v: 50.0 if pd.notna(v) else np.nan
+                    )
+
+            if tier_pct.notna().any():
+                pct_ranks[feat] = tier_pct
 
         if not pct_ranks:
-            print(f"  ERROR [{pos_group}]: no features with variance!")
+            print(f"  WARN [{pos_group}]: no features found, defaulting to 50")
+            df.loc[mask, "raw_scouting_score"]      = 50.0
+            df.loc[mask, "adjusted_scouting_score"] = (
+                50.0 * pd.to_numeric(df.loc[mask, "league_difficulty"], errors="coerce").fillna(0.75)
+            ).round(1)
             continue
 
-        # Step 2 — per-player score with weight redistribution
+        # Step 2 — per-player score with weight redistribution over available features
         scores = pd.Series(np.nan, index=pos_df.index, dtype=float)
         for idx in pos_df.index:
-            # Collect features this player actually has a value for
             player_avail = {
                 feat: weights[feat]
                 for feat in pct_ranks
@@ -124,8 +151,6 @@ def compute_scouting_scores(df):
             if not player_avail:
                 scores.loc[idx] = 50.0
                 continue
-
-            # Renormalise weights over available features only
             total_wt = sum(player_avail.values())
             score = sum(
                 (wt / total_wt) * pct_ranks[feat].loc[idx]
@@ -137,7 +162,7 @@ def compute_scouting_scores(df):
         ld = pd.to_numeric(df.loc[mask, "league_difficulty"], errors="coerce").fillna(0.75)
         df.loc[mask, "adjusted_scouting_score"] = (scores * ld).round(1)
 
-    print("\nAverage scores per position group:")
+    print("\nAverage scores per position group (raw / adjusted):")
     summary = df.groupby("position_group")[["raw_scouting_score","adjusted_scouting_score"]].mean()
     print(summary.round(1))
     return df
@@ -187,6 +212,21 @@ def compute_contract_flag(df):
     return df
 
 
+def compute_age_context(df):
+    def _label(age):
+        if pd.isna(age):
+            return ""
+        age = int(age)
+        if age <= 21:   return "High Potential"
+        if age <= 24:   return "Developing"
+        if age <= 27:   return "Prime"
+        if age <= 29:   return "Experienced"
+        return "Declining"
+    df = df.copy()
+    df["age_score_context"] = df["age"].apply(_label)
+    return df
+
+
 # Main
 def run():
     df = pd.read_csv(DATA_PROC / "players_clean.csv", low_memory=False)
@@ -197,6 +237,7 @@ def run():
     df = compute_scouting_scores(df)
     df = compute_value_status(df)
     df = compute_contract_flag(df)
+    df = compute_age_context(df)
 
     # 4g. Save
     out = DATA_FINAL / "players_final.csv"
@@ -257,6 +298,35 @@ def run():
     print("\nTEST 4.8 Top 5 undervalued players under €3m:")
     print(uv[["player","team","league_clean","position_group","market_value_m",
                "adjusted_scouting_score","valuation_status"]].to_string(index=False))
+
+    # TEST 4.8a: Rasmus Højlund profile
+    hojlund = df[df["player"].str.contains("H.jlund", case=False, na=False)]
+    if not hojlund.empty:
+        h = hojlund.iloc[0]
+        tier = int(h.get("league_tier", 0))
+        print(f"\nTEST 4.8a Rasmus Højlund: tier={tier} raw={h.get('raw_scouting_score')} "
+              f"adj={h.get('adjusted_scouting_score')} league={h.get('league_clean')}")
+
+    # TEST 4.8b: Top Danish ST for comparison
+    danish_sts = df[(df["position_group"] == "ST") &
+                    (df["league_clean"] == "Superliga")].nlargest(1, "raw_scouting_score")
+    if not danish_sts.empty:
+        d = danish_sts.iloc[0]
+        print(f"TEST 4.8b Top Danish ST: {d['player']} raw={d.get('raw_scouting_score')} "
+              f"adj={d.get('adjusted_scouting_score')} tier={int(d.get('league_tier',0))}")
+
+    # TEST 4.8c: Top 5 ST in target leagues by adjusted_score
+    target_leagues_list = [l for l in LEAGUE_TIERS]
+    st_target = df[(df["position_group"] == "ST") &
+                   (df["league_clean"].isin(target_leagues_list))].nlargest(5, "adjusted_scouting_score")
+    print("\nTEST 4.9 Top 5 ST (target leagues) by adjusted_score:")
+    print(st_target[["player","league_clean","league_tier","raw_scouting_score","adjusted_scouting_score"]].to_string(index=False))
+
+    # TEST 4.10: Top 5 W in target leagues by adjusted_score
+    w_target = df[(df["position_group"] == "W") &
+                  (df["league_clean"].isin(target_leagues_list))].nlargest(5, "adjusted_scouting_score")
+    print("\nTEST 4.10 Top 5 W (target leagues) by adjusted_score:")
+    print(w_target[["player","league_clean","league_tier","raw_scouting_score","adjusted_scouting_score"]].to_string(index=False))
 
     print(f"\nFinal: {len(df)} players, {len(df.columns)} columns")
     print(f"Players per position: {df['position_group'].value_counts().to_dict()}")

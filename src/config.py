@@ -21,50 +21,77 @@ POSITION_GROUP_MAP = {
 }
 
 SCOUTING_WEIGHTS = {
-    # Weights use only metrics available across ALL 13 leagues.
-    # Big-5-only metrics (xg_p90, key_passes_p90) are included where relevant;
-    # compute_scouting_scores redistributes their weight per-player when absent.
     "CB": {
-        "tackles_won_p90":   0.40,
-        "interceptions_p90": 0.40,
-        "goals_p90":         0.10,
-        "crosses_p90":       0.10,
+        "tackle_success_rate":     0.25,
+        "interceptions_p90":       0.25,
+        "tackles_won_p90":         0.20,
+        "progressive_passes_p90":  0.15,
+        "clearances_p90":          0.15,
     },
     "FB": {
-        "crosses_p90":       0.35,
-        "tackles_won_p90":   0.30,
-        "interceptions_p90": 0.20,
-        "assists_p90":       0.15,
+        "progressive_carries_p90": 0.20,
+        "key_passes_p90":          0.20,
+        "tackles_won_p90":         0.20,
+        "tackle_success_rate":     0.15,
+        "interceptions_p90":       0.15,
+        "assists_p90":             0.10,
     },
     "DM": {
-        "tackles_won_p90":   0.45,
-        "interceptions_p90": 0.40,
-        "assists_p90":       0.15,
+        "tackle_success_rate":     0.25,
+        "tackles_won_p90":         0.25,
+        "interceptions_p90":       0.20,
+        "pass_completion_rate":    0.15,
+        "progressive_passes_p90":  0.15,
     },
     "CM": {
-        "goals_p90":         0.30,
-        "assists_p90":       0.30,
-        "tackles_won_p90":   0.25,
-        "key_passes_p90":    0.15,
+        "progressive_passes_p90":  0.20,
+        "key_passes_p90":          0.20,
+        "assists_p90":             0.20,
+        "tackle_success_rate":     0.15,
+        "goals_p90":               0.15,
+        "pass_completion_rate":    0.10,
     },
     "AM": {
-        "assists_p90":       0.35,
-        "goals_p90":         0.30,
-        "key_passes_p90":    0.25,
-        "xg_p90":            0.10,
+        "xag_p90":                 0.25,
+        "key_passes_p90":          0.25,
+        "assists_p90":             0.20,
+        "goals_p90":               0.15,
+        "dribble_success_rate":    0.15,
     },
     "W": {
-        "goals_p90":         0.30,
-        "assists_p90":       0.25,
-        "xg_p90":            0.25,
-        "crosses_p90":       0.20,
+        "progressive_carries_p90": 0.20,
+        "goals_p90":               0.20,
+        "xg_p90":                  0.15,
+        "dribble_success_rate":    0.20,
+        "assists_p90":             0.10,
+        "key_passes_p90":          0.15,
     },
     "ST": {
-        "goals_p90":            0.40,
-        "xg_p90":               0.35,
-        "shots_on_target_p90":  0.15,
-        "assists_p90":          0.10,
+        "goals_p90":               0.25,
+        "npxg_p90":                0.25,
+        "goals_per_shot":          0.20,
+        "shots_on_target_p90":     0.15,
+        "assists_p90":             0.15,
     },
+}
+
+LEAGUE_TIERS = {
+    # Tier 1 — Big 5
+    "Premier League":       1,
+    "La Liga":              1,
+    "Bundesliga":           1,
+    "Serie A":              1,
+    "Ligue 1":              1,
+    # Tier 2 — Strong
+    "Eredivisie":           2,
+    "Primeira Liga":        2,
+    "Super Lig":            2,
+    "Belgian Pro League":   2,
+    # Tier 3 — Developing
+    "Superliga":            3,
+    "Scottish Premiership": 3,
+    "Serie A (Brazil)":     3,
+    "Primera Division":     3,
 }
 
 LEAGUE_DIFFICULTY = {

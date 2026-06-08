@@ -107,66 +107,11 @@ TBL_CELL = {
     "fontFamily": FONT, "fontSize": "12px", "padding": "8px 10px",
 }
 
-# ── Tactical Profiles ─────────────────────────────────────────────────────────
-# Each entry: (display_name, [(column, operator, pct_threshold)])
-# Percentile thresholds are within the position group.
-# Missing columns are silently skipped.
-
-TACTICAL_PROFILES = {
-    "W": [
-        ("High Presser",    [("pressures_p90",          ">=", 70)]),  # col missing → skipped
-        ("Direct Dribbler", [("dribbles_completed_p90", ">=", 65)]),
-        ("Creator",         [("key_passes_p90",          ">=", 65)]),
-        ("Goal Threat",     [("xg_p90",                  ">=", 65)]),
-    ],
-    "ST": [
-        ("Poacher",      [("npxg_p90",                ">=", 70),
-                          ("progressive_carries_p90", "<",  50)]),
-        ("Target Man",   [("aerial_duels_won_pct",    ">=", 60)]),
-        ("Pressing ST",  [("pressures_p90",            ">=", 65)]),   # col missing → skipped
-        ("Link-Up",      [("assists_p90",              ">=", 60),
-                          ("progressive_receives_p90",">=", 60)]),
-    ],
-    "CM": [
-        ("Ball Winner",    [("tackles_p90",            ">=", 65),
-                            ("interceptions_p90",      ">=", 65)]),
-        ("Deep Playmaker", [("pass_completion_rate",   ">=", 70),
-                            ("progressive_passes_p90", ">=", 65)]),
-        ("Box-to-Box",     [("tackles_p90",            ">=", 55),
-                            ("goals_p90",              ">=", 55)]),
-        ("Progressive",    [("progressive_passes_p90", ">=", 70)]),
-    ],
-    "CB": [
-        ("Ball-Playing",      [("progressive_passes_p90", ">=", 65),
-                               ("pass_completion_rate",   ">=", 65)]),
-        ("Defensive Stopper", [("tackles_p90",            ">=", 65),
-                               ("interceptions_p90",      ">=", 65)]),
-        ("Aerial Dominator",  [("aerial_duels_won_pct",   ">=", 70)]),
-    ],
-    "DM": [
-        ("Ball Winner",        [("tackles_p90",            ">=", 65),
-                                ("interceptions_p90",      ">=", 65)]),
-        ("Screener",           [("blocks_p90",             ">=", 65),
-                                ("clearances_p90",         ">=", 55)]),
-        ("Progressive Passer", [("progressive_passes_p90", ">=", 70)]),
-    ],
-    "FB": [
-        ("Attacking FB",  [("progressive_carries_p90", ">=", 65),
-                           ("crosses_p90",              ">=", 65)]),
-        ("Defensive FB",  [("tackles_p90",              ">=", 65),
-                           ("interceptions_p90",        ">=", 65)]),
-        ("Complete FB",   [("progressive_carries_p90",  ">=", 55),
-                           ("tackles_p90",              ">=", 55)]),
-    ],
-    "AM": [
-        ("Classic 10",        [("key_passes_p90",          ">=", 65),
-                               ("xag_p90",                 ">=", 65)]),
-        ("Half-Space Runner", [("progressive_carries_p90", ">=", 65),
-                               ("goals_p90",               ">=", 55)]),
-        ("Direct Creator",    [("assists_p90",             ">=", 65),
-                               ("dribbles_completed_p90",  ">=", 55)]),
-    ],
-}
+# ── Player filter definitions ─────────────────────────────────────────────────
+# 3 simple boolean filters: each is a hard filter (removes non-qualifying players)
+# when toggled ON. Missing data = player passes (benefit of the doubt).
+FILTER_DEF_POSITIONS  = {"CB", "FB", "DM", "CM"}   # Defensively Strong
+FILTER_GOAL_POSITIONS = {"ST", "W", "AM", "CM"}     # Goal Threat
 
 # rgba equivalents for Plotly fillcolor (Plotly 6+ rejects 8-char hex)
 RGBA_RED   = "rgba(204,0,0,0.2)"
@@ -283,37 +228,16 @@ def badge(text, color=GREEN, bg=None):
         "fontFamily": FONT, "whiteSpace": "nowrap",
     })
 
-def get_tactical_sort_info(pos, active_profiles, filtered_df=None):
-    """Return (sort_col, position_series) for tactical sorting.
+_AGE_EMOJI = {
+    "High Potential": "🌱",
+    "Developing":     "📈",
+    "Prime":          "⭐",
+    "Experienced":    "✓",
+    "Declining":      "⚠",
+}
 
-    Iterates through each condition in the first active profile and returns
-    the first column that has at least one non-NaN value in filtered_df.
-    This prevents returning an all-NaN column (e.g. progressive_passes_p90
-    for non-Big5 leagues) that would make the sort a visual no-op.
-
-    Returns (None, None) when no usable column is found.
-    """
-    if not active_profiles:
-        return None, None
-    profiles = {name: conds for name, conds in TACTICAL_PROFILES.get(pos, [])}
-    for profile_name in active_profiles:
-        if profile_name not in profiles:
-            continue
-        for col, _op, _thr in profiles[profile_name]:
-            if col not in DF.columns:
-                continue
-            # Skip columns with no real data in the current filtered result set
-            if filtered_df is not None:
-                n_valid = pd.to_numeric(filtered_df[col], errors="coerce").notna().sum()
-                if n_valid == 0:
-                    continue
-            series = pd.to_numeric(
-                DF[DF["position_group"] == pos][col], errors="coerce"
-            ).dropna()
-            if len(series) == 0:
-                continue
-            return col, series
-    return None, None
+def age_stage_emoji(ctx):
+    return _AGE_EMOJI.get(str(ctx), "")
 
 # ── Formation Pitch ───────────────────────────────────────────────────────────
 
@@ -731,18 +655,43 @@ def build_tab2():
 
                 html.Hr(style={"borderColor": BORDER, "margin": "12px 0"}),
                 html.Div([
-                    html.Span("⭐ Tactical Profile",
+                    html.Span("🎯 Player Filters",
                               style={"color": AMBER, "fontSize": "11px",
                                      "fontWeight": "700", "fontFamily": FONT}),
-                    html.Div("Sort by playing style — no players excluded",
+                    html.Div("Removes non-qualifying players · missing data = passes",
                              style={"color": TEXT_MUTED, "fontSize": "10px",
-                                    "fontFamily": FONT, "marginBottom": "6px"}),
-                    dcc.Checklist(id="t2-tactical",
-                                  options=[], value=[],
-                                  inputStyle={"marginRight": "6px"},
-                                  labelStyle={"display": "block", "marginBottom": "4px",
-                                              "fontSize": "12px", "color": TEXT,
-                                              "fontFamily": FONT}),
+                                    "fontFamily": FONT, "marginBottom": "8px"}),
+                    # Defensively Strong — CB, FB, DM, CM only
+                    html.Div(id="t2-filter-def-wrap", style={"display": "none"}, children=[
+                        dbc.Switch(id="t2-filter-def", label="⚔ Defensively Strong",
+                                   value=False,
+                                   style={"fontSize": "12px", "color": TEXT,
+                                          "fontFamily": FONT, "marginBottom": "6px"}),
+                        html.Div("tackle_success_rate ≥55th AND interceptions ≥50th",
+                                 style={"color": TEXT_MUTED, "fontSize": "10px",
+                                        "fontFamily": FONT, "marginBottom": "8px",
+                                        "marginLeft": "12px"}),
+                    ]),
+                    # Goal Threat — ST, W, AM, CM only
+                    html.Div(id="t2-filter-goal-wrap", style={"display": "none"}, children=[
+                        dbc.Switch(id="t2-filter-goal", label="🎯 Goal Threat",
+                                   value=False,
+                                   style={"fontSize": "12px", "color": TEXT,
+                                          "fontFamily": FONT, "marginBottom": "6px"}),
+                        html.Div("goals/90 ≥55th OR xG/90 ≥55th",
+                                 style={"color": TEXT_MUTED, "fontSize": "10px",
+                                        "fontFamily": FONT, "marginBottom": "8px",
+                                        "marginLeft": "12px"}),
+                    ]),
+                    # Progressive — all positions
+                    dbc.Switch(id="t2-filter-prog", label="🔄 Progressive / Creative",
+                               value=False,
+                               style={"fontSize": "12px", "color": TEXT,
+                                      "fontFamily": FONT, "marginBottom": "6px"}),
+                    html.Div("prog carries ≥55th OR key passes ≥55th OR prog passes ≥55th",
+                             style={"color": TEXT_MUTED, "fontSize": "10px",
+                                    "fontFamily": FONT, "marginBottom": "4px",
+                                    "marginLeft": "12px"}),
                 ]),
 
                 html.Div(style={"height": "12px"}),
@@ -1174,7 +1123,13 @@ def _profile_content(player_name, shortlist):
     mv_badge   = badge(f"€{mv:.2f}m" if pd.notna(mv) else "–", BLUE, BLUE + "22")
     exp_badge  = badge("⚡ Expiring", AMBER, AMBER + "22") if exp else None
     cov_badge  = coverage_badge(avail, total)
+    age_ctx    = str(r.get("age_score_context", ""))
+    age_emoji  = age_stage_emoji(age_ctx)
+    age_ctx_badge = (badge(f"{age_emoji} {age_ctx}", TEXT_MUTED, TEXT_MUTED + "22")
+                     if age_ctx else None)
     badges     = [mv_badge, html.Span(" "), cov_badge]
+    if age_ctx_badge:
+        badges += [html.Span(" "), age_ctx_badge]
     if exp_badge:
         badges += [html.Span(" "), exp_badge]
 
@@ -1588,22 +1543,19 @@ def update_slider_labels(age, mv, mins):
             f"Budget cap: €{mv}m",
             f"Min Minutes: {mins}")
 
-# Tab 2 — populate tactical profiles based on selected position
+# Tab 2 — show/hide position-specific filter toggles
 @app.callback(
-    [Output("t2-tactical", "options"),
-     Output("t2-tactical", "value")],
+    [Output("t2-filter-def-wrap",  "style"),
+     Output("t2-filter-goal-wrap", "style")],
     Input("t2-pos", "value"),
 )
-def update_tactical_options(pos):
-    if not pos or pos not in TACTICAL_PROFILES:
-        return [], []
-    profiles = TACTICAL_PROFILES[pos]
-    available = []
-    for name, conditions in profiles:
-        valid = any(col in DF.columns for col, op, thr in conditions)
-        if valid:
-            available.append({"label": name, "value": name})
-    return available, []
+def update_filter_visibility(pos):
+    show = {"display": "block"}
+    hide = {"display": "none"}
+    return (
+        show if pos in FILTER_DEF_POSITIONS  else hide,
+        show if pos in FILTER_GOAL_POSITIONS else hide,
+    )
 
 # Tab 2 — pre-populate position from navigation store
 @app.callback(
@@ -1620,19 +1572,21 @@ def set_nav_position(pos):
      Output("t2-hdr",      "children")],
     [Input("t2-apply", "n_clicks"),
      Input("t2-reset", "n_clicks")],
-    [State("t2-pos",      "value"),
-     State("t2-leagues",  "data"),
-     State("t2-age",      "value"),
-     State("t2-mv",       "value"),
-     State("t2-mins",     "value"),
-     State("t2-contract", "value"),
-     State("t2-sort",     "value"),
-     State("t2-tactical", "value"),
+    [State("t2-pos",          "value"),
+     State("t2-leagues",      "data"),
+     State("t2-age",          "value"),
+     State("t2-mv",           "value"),
+     State("t2-mins",         "value"),
+     State("t2-contract",     "value"),
+     State("t2-sort",         "value"),
+     State("t2-filter-def",   "value"),
+     State("t2-filter-goal",  "value"),
+     State("t2-filter-prog",  "value"),
      State("shortlist-store", "data")],
     prevent_initial_call=True,
 )
 def update_discovery(apply_n, reset_n, pos, leagues, max_age, max_mv, min_mins,
-                     contract, sort_by, tactical, shortlist):
+                     contract, sort_by, filter_def, filter_goal, filter_prog, shortlist):
     ctx = callback_context
     if not ctx.triggered or not pos:
         return (html.P("Select a position to load results.",
@@ -1662,17 +1616,58 @@ def update_discovery(apply_n, reset_n, pos, leagues, max_age, max_mv, min_mins,
     if contract == "expiring":
         df = df[df["contract_expiring"] == True]
 
-    # Tactical: sort by key stat, never filter out players
-    # Pass filtered df so all-NaN columns (e.g. progressive_passes_p90 for non-Big5
-    # leagues) are skipped and we fall through to the next available stat.
-    tact_col, tact_series = (
-        get_tactical_sort_info(pos, tactical, df) if tactical else (None, None)
-    )
+    # ── 3 Boolean Filters ────────────────────────────────────────────────────
+    # Thresholds computed on the FULL position group (not just the filtered subset)
+    # so they are stable regardless of league/age/budget filters applied above.
+    pos_all = DF[DF["position_group"] == pos]
+
+    if filter_def and pos in FILTER_DEF_POSITIONS:
+        tsr  = pd.to_numeric(df["tackle_success_rate"], errors="coerce")
+        intc = pd.to_numeric(df["interceptions_p90"],   errors="coerce")
+        tsr_thresh  = pd.to_numeric(pos_all["tackle_success_rate"], errors="coerce").quantile(0.55)
+        intc_thresh = pd.to_numeric(pos_all["interceptions_p90"],   errors="coerce").quantile(0.50)
+        # Fails only when BOTH stats present AND either falls below threshold
+        fails = tsr.notna() & intc.notna() & ((tsr < tsr_thresh) | (intc < intc_thresh))
+        df = df[~fails]
+
+    if filter_goal and pos in FILTER_GOAL_POSITIONS:
+        gp90 = pd.to_numeric(df["goals_p90"], errors="coerce")
+        g_thresh = pd.to_numeric(pos_all["goals_p90"], errors="coerce").quantile(0.55)
+        g_ok = gp90.notna() & (gp90 >= g_thresh)
+
+        if "xg_p90" in df.columns:
+            xg90 = pd.to_numeric(df["xg_p90"], errors="coerce")
+            xg_thresh = pd.to_numeric(pos_all["xg_p90"], errors="coerce").quantile(0.55)
+            xg_ok = xg90.notna() & (xg90 >= xg_thresh)
+        else:
+            xg_ok = pd.Series(False, index=df.index)
+            xg90  = pd.Series(np.nan, index=df.index)
+
+        all_missing = gp90.isna() & (xg90.isna() if "xg_p90" in df.columns else pd.Series(True, index=df.index))
+        df = df[all_missing | g_ok | xg_ok]
+
+    if filter_prog:
+        pc90 = pd.to_numeric(df["progressive_carries_p90"], errors="coerce")
+        pc_thresh = pd.to_numeric(pos_all["progressive_carries_p90"], errors="coerce").quantile(0.55)
+        pc_ok = pc90.notna() & (pc90 >= pc_thresh)
+
+        kp90, kp_ok = pd.Series(np.nan, index=df.index), pd.Series(False, index=df.index)
+        if "key_passes_p90" in df.columns:
+            kp90 = pd.to_numeric(df["key_passes_p90"], errors="coerce")
+            kp_thresh = pd.to_numeric(pos_all["key_passes_p90"], errors="coerce").quantile(0.55)
+            kp_ok = kp90.notna() & (kp90 >= kp_thresh)
+
+        pp90, pp_ok = pd.Series(np.nan, index=df.index), pd.Series(False, index=df.index)
+        if "progressive_passes_p90" in df.columns:
+            pp90 = pd.to_numeric(df["progressive_passes_p90"], errors="coerce")
+            pp_thresh = pd.to_numeric(pos_all["progressive_passes_p90"], errors="coerce").quantile(0.55)
+            pp_ok = pp90.notna() & (pp90 >= pp_thresh)
+
+        all_missing = pc90.isna() & kp90.isna() & pp90.isna()
+        df = df[all_missing | pc_ok | kp_ok | pp_ok]
 
     # Sort
-    if tact_col and tact_col in df.columns:
-        df = df.sort_values(tact_col, ascending=False)
-    elif sort_by == "mv_asc":
+    if sort_by == "mv_asc":
         df = df.sort_values("market_value_m", ascending=True)
     elif sort_by in df.columns:
         df = df.sort_values(sort_by, ascending=(sort_by == "age"))
@@ -1688,8 +1683,7 @@ def update_discovery(apply_n, reset_n, pos, leagues, max_age, max_mv, min_mins,
                                                         "margin": "0", "fontFamily": FONT}))
 
     shortlist_names = [p["player"] for p in (shortlist or [])]
-
-    _total_stats = len(RADAR_METRICS.get(pos, []))
+    _total_stats    = len(RADAR_METRICS.get(pos, []))
 
     table_data = []
     for _, r in df.iterrows():
@@ -1697,32 +1691,30 @@ def update_discovery(apply_n, reset_n, pos, leagues, max_age, max_mv, min_mins,
         mv_str = f"€{r['market_value_m']:.2f}m" if pd.notna(r["market_value_m"]) else "–"
         contract_ico = "⚡" if r.get("contract_expiring") else ""
         r_avail, _ = stat_coverage(r, pos)
-        row = {
+        age_ctx = age_stage_emoji(r.get("age_score_context", ""))
+        table_data.append({
             "★":       star,
             "Player":  r["player"],
             "Club":    r.get("team", ""),
             "League":  r.get("league_clean", ""),
             "Age":     int(r["age"]) if pd.notna(r["age"]) else "–",
+            "~":       age_ctx,
             "Pos":     r.get("position_group", ""),
             "MV (€m)": mv_str,
             "Raw":     round(float(r["raw_scouting_score"]), 1) if pd.notna(r["raw_scouting_score"]) else "–",
             "Score":   round(float(r["adjusted_scouting_score"]), 1) if pd.notna(r["adjusted_scouting_score"]) else "–",
             "Data":    coverage_dots(r_avail, _total_stats),
             "Exp":     contract_ico,
-        }
-        if tact_col and tact_series is not None:
-            val_num = pd.to_numeric(r.get(tact_col), errors="coerce")
-            if pd.notna(val_num) and len(tact_series) > 0:
-                pct = round(float((tact_series < val_num).mean() * 100))
-                row["Profile%"] = f"{pct}th"
-            else:
-                row["Profile%"] = "–"
-        table_data.append(row)
+        })
 
-    _col_names = ["★", "Player", "Club", "League", "Age", "Pos", "MV (€m)", "Raw", "Score", "Data"]
-    if tact_col:
-        _col_names.append("Profile%")
-    _col_names.append("Exp")
+    _col_names = ["★", "Player", "Club", "League", "Age", "~", "Pos", "MV (€m)", "Raw", "Score", "Data", "Exp"]
+
+    # Build active-filter note for header
+    active_filters = []
+    if filter_def  and pos in FILTER_DEF_POSITIONS:  active_filters.append("⚔ Def Strong")
+    if filter_goal and pos in FILTER_GOAL_POSITIONS: active_filters.append("🎯 Goal Threat")
+    if filter_prog: active_filters.append("🔄 Progressive")
+    filter_note = f"  ·  {' + '.join(active_filters)}" if active_filters else ""
 
     tbl = dash_table.DataTable(
         id="t2-table",
@@ -1737,17 +1729,17 @@ def update_discovery(apply_n, reset_n, pos, leagues, max_age, max_mv, min_mins,
         style_cell={**TBL_CELL, "textAlign": "left", "maxWidth": "160px",
                     "overflow": "hidden", "textOverflow": "ellipsis"},
         style_cell_conditional=[
-            {"if": {"column_id": "★"},       "width": "30px", "textAlign": "center",
+            {"if": {"column_id": "★"},    "width": "30px", "textAlign": "center",
              "cursor": "pointer", "color": AMBER, "fontSize": "14px"},
-            {"if": {"column_id": "Age"},     "width": "40px", "textAlign": "center"},
-            {"if": {"column_id": "Pos"},     "width": "40px", "textAlign": "center"},
-            {"if": {"column_id": "Raw"},     "width": "55px", "textAlign": "center"},
-            {"if": {"column_id": "Score"},   "width": "55px", "textAlign": "center"},
-            {"if": {"column_id": "Data"},    "width": "75px", "textAlign": "center",
+            {"if": {"column_id": "Age"},  "width": "40px", "textAlign": "center"},
+            {"if": {"column_id": "~"},    "width": "24px", "textAlign": "center",
+             "fontSize": "12px", "padding": "0"},
+            {"if": {"column_id": "Pos"},  "width": "40px", "textAlign": "center"},
+            {"if": {"column_id": "Raw"},  "width": "55px", "textAlign": "center"},
+            {"if": {"column_id": "Score"},"width": "55px", "textAlign": "center"},
+            {"if": {"column_id": "Data"}, "width": "75px", "textAlign": "center",
              "fontSize": "10px", "letterSpacing": "1px", "color": TEXT_MUTED},
-            {"if": {"column_id": "Profile%"},"width": "65px", "textAlign": "center",
-             "color": AMBER, "fontWeight": "700"},
-            {"if": {"column_id": "Exp"},     "width": "30px", "textAlign": "center",
+            {"if": {"column_id": "Exp"},  "width": "30px", "textAlign": "center",
              "color": AMBER},
         ],
         style_data_conditional=[
@@ -1759,29 +1751,13 @@ def update_discovery(apply_n, reset_n, pos, leagues, max_age, max_mv, min_mins,
         tooltip_duration=None,
     )
 
-    # Header: show sort status (tactical stat used or fallback reason)
-    tact_note_parts = []
-    if tactical:
-        if tact_col:
-            tact_note_parts.append(
-                html.Span(f"  ·  sorted by {tact_col}",
-                          style={"color": AMBER, "fontSize": "11px", "fontFamily": FONT})
-            )
-        else:
-            # Profile selected but no available stat for current league filter
-            tact_note_parts.append(
-                html.Span(f"  ·  {', '.join(tactical)}: stat not available for selected leagues — showing score order",
-                          style={"color": RED, "fontSize": "11px", "fontFamily": FONT})
-            )
-
     hdr = html.Div([
-        html.Span(f"{n} player{'s' if n != 1 else ''} found",
+        html.Span(f"{n} player{'s' if n != 1 else ''} match",
                   style={"color": TEXT, "fontWeight": "700",
                          "fontSize": "14px", "fontFamily": FONT}),
         html.Span(f"  ·  {pos}  ·  click ☆ to shortlist · click row to profile",
-                  style={"color": TEXT_MUTED, "fontSize": "11px",
-                         "fontFamily": FONT}),
-        *tact_note_parts,
+                  style={"color": TEXT_MUTED, "fontSize": "11px", "fontFamily": FONT}),
+        html.Span(filter_note, style={"color": AMBER, "fontSize": "11px", "fontFamily": FONT}),
     ])
     return tbl, hdr
 
