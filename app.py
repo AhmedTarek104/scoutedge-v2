@@ -1342,18 +1342,28 @@ def _profile_content(player_name, shortlist):
             ("SIMILAR LEVEL",    AMBER)  if target_score >= 50 else
             ("BELOW THRESHOLD",  RED)
         )
+        # Build stats string for a player: "X goals, Y assists (24/25)"
+        def _stats_str(g, a):
+            if pd.notna(g) and pd.notna(a):
+                return f"{int(g)}g, {int(a)}a (24/25)"
+            return "–"
+
         comp_rows = []
-        for lbl, col in [("Score", "adjusted_scouting_score"), ("Age", "age"), ("Value", "market_value_m")]:
+        for lbl, col in [("Stats (24/25)", "adjusted_scouting_score"), ("Age", "age"), ("Value", "market_value_m")]:
             tgt_val  = r.get(col)
             ahly_val = ahly_p.get(col)
             if col == "market_value_m":
                 tgt_str  = f"€{tgt_val:.2f}m"  if pd.notna(tgt_val)  else "–"
                 ahly_str = f"€{ahly_val:.2f}m" if pd.notna(ahly_val) else "–"
             elif col == "adjusted_scouting_score":
-                score_str = f"{tgt_val:.1f}" if pd.notna(tgt_val) else "–"
-                tgt_str   = f"{score_str}*" if avail <= 2 and score_str != "–" else score_str
-                raw_score = pd.to_numeric(ahly_p.get("raw_scouting_score"), errors="coerce")
-                ahly_str  = f"{raw_score:.1f}" if pd.notna(raw_score) and raw_score > 0 else "–"
+                # Target: show their season goals/assists from DF
+                tgt_g = pd.to_numeric(r.get("goals"),   errors="coerce")
+                tgt_a = pd.to_numeric(r.get("assists"), errors="coerce")
+                tgt_str = _stats_str(tgt_g, tgt_a)
+                # Al Ahly: show their 24/25 stats from squad CSV
+                ah_g = pd.to_numeric(ahly_p.get("goals_2425"),   errors="coerce")
+                ah_a = pd.to_numeric(ahly_p.get("assists_2425"), errors="coerce")
+                ahly_str = _stats_str(ah_g, ah_a)
             else:
                 tgt_str  = str(int(tgt_val))  if pd.notna(tgt_val)  else "–"
                 ahly_str = str(int(ahly_val)) if pd.notna(ahly_val) else "–"
@@ -1364,17 +1374,10 @@ def _profile_content(player_name, shortlist):
             style_header=TBL_HEADER,
             style_cell={**TBL_CELL, "fontSize": "12px", "textAlign": "center"},
         )
-        score_footnote = (
-            [html.P(f"* Score based on limited data ({avail} stats)",
-                    style={"color": TEXT_MUTED, "fontSize": "10px", "fontStyle": "italic",
-                           "fontFamily": FONT, "marginTop": "4px", "marginBottom": "0"})]
-            if avail <= 2 else []
-        )
         vs_panel = html.Div([
             html.H6(f"{player_name} vs {ahly_name}",
                     style={"color": TEXT, "fontWeight": "600", "fontFamily": FONT, "marginBottom": "8px"}),
             comp_tbl,
-            *score_footnote,
             html.Div(style={"height": "10px"}),
             html.Div([badge(verdict_txt, verdict_color, verdict_color + "22")],
                      style={"textAlign": "center"}),
@@ -1434,15 +1437,85 @@ def _profile_content(player_name, shortlist):
     )
 
     row2 = html.Div([
-        html.H6("Most Similar Players",
-                style={"color": TEXT, "fontWeight": "600", "fontFamily": FONT, "marginBottom": "2px"}),
-        html.Div(f"Same position ({pos}) · Target leagues · click ★ to shortlist",
+        dbc.Row([
+            dbc.Col(html.H6("Most Similar Players",
+                            style={"color": TEXT, "fontWeight": "600", "fontFamily": FONT,
+                                   "marginBottom": "0"}), width="auto"),
+            dbc.Col(
+                dbc.Checklist(
+                    id="sim-target-leagues-toggle",
+                    options=[{"label": "Target leagues only", "value": "target"}],
+                    value=["target"],
+                    inline=True,
+                    style={"fontSize": "12px", "color": TEXT_MUTED, "fontFamily": FONT},
+                    inputStyle={"marginRight": "4px"},
+                    labelStyle={"cursor": "pointer"},
+                ),
+                width="auto", className="ms-auto",
+                style={"display": "flex", "alignItems": "center"},
+            ),
+        ], align="center", className="mb-2"),
+        html.Div(f"Same position ({pos}) · click ★ to shortlist",
                  style={"color": TEXT_MUTED, "fontSize": "11px", "fontFamily": FONT, "marginBottom": "10px"}),
-        sim_section,
-        sim_note,
+        html.Div(id="sim-players-content", children=[sim_section, sim_note]),
     ], style=CARD)
 
     return html.Div([header, row1, row2])
+
+
+@app.callback(
+    Output("sim-players-content", "children"),
+    Input("sim-target-leagues-toggle", "value"),
+    State("selected-player", "data"),
+    prevent_initial_call=True,
+)
+def refresh_sim_players(toggle_val, player_name):
+    if not player_name:
+        return []
+    target_only = "target" in (toggle_val or [])
+    try:
+        sim_df = get_similar_players(player_name, DF, MATRICES, n=8, target_leagues_only=target_only)
+    except Exception:
+        sim_df = pd.DataFrame()
+
+    player_row = DF[DF["player"].str.lower().str.strip() == player_name.lower().strip()]
+    pos        = player_row.iloc[0]["position_group"] if not player_row.empty else ""
+
+    if sim_df.empty:
+        sim_section = html.P("No similar players found.", style={"color": TEXT_MUTED, "fontFamily": FONT})
+    else:
+        sim_data = []
+        for _, sr in sim_df.iterrows():
+            smv = sr.get("market_value_m")
+            sim_data.append({
+                "★": "☆", "Player": sr["player"], "Club": sr.get("team", ""),
+                "League": sr.get("league_clean", ""),
+                "Age":    int(sr["age"]) if pd.notna(sr["age"]) else "–",
+                "MV (€m)": f"€{smv:.2f}m" if pd.notna(smv) else "–",
+                "Sim%":   f"{sr['similarity_pct']:.0f}%",
+                "Score":  round(float(sr["adjusted_scouting_score"]), 1) if pd.notna(sr.get("adjusted_scouting_score")) else "–",
+            })
+        sim_section = dash_table.DataTable(
+            data=sim_data,
+            columns=[{"name": c, "id": c} for c in ["★", "Player", "Club", "League", "Age", "MV (€m)", "Sim%", "Score"]],
+            style_header=TBL_HEADER,
+            style_cell={**TBL_CELL, "fontSize": "12px", "textAlign": "left"},
+            style_cell_conditional=[
+                {"if": {"column_id": "★"},    "width": "28px", "textAlign": "center",
+                 "color": AMBER, "cursor": "pointer"},
+                {"if": {"column_id": "Sim%"}, "textAlign": "center", "fontWeight": "700"},
+            ],
+            style_data_conditional=[{"if": {"row_index": "odd"}, "background": BG_CARD2}],
+        )
+
+    avail, _ = stat_coverage(player_row.iloc[0] if not player_row.empty else pd.Series(), pos)
+    sim_note = html.P(
+        f"Similarity based on {avail} available stat{'s' if avail != 1 else ''}. "
+        f"More stats = more precise matching.",
+        style={"color": TEXT_MUTED, "fontSize": "11px", "fontStyle": "italic",
+               "fontFamily": FONT, "marginTop": "8px", "marginBottom": "0"},
+    )
+    return [sim_section, sim_note]
 
 
 @app.callback(

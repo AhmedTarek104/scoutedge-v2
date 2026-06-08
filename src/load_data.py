@@ -155,6 +155,7 @@ def add_market_values(df):
     df["player_lower"] = df["player"].str.lower().str.strip()
 
     mv_lookup = (mapping_with_vals[["player_lower", "market_value_m", "contract_expiry"]]
+                 .sort_values("market_value_m", ascending=False)
                  .drop_duplicates("player_lower"))
 
     df_merged = df.merge(mv_lookup, on="player_lower", how="left")

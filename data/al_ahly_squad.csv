@@ -1,27 +1,27 @@
-player,position_group,position_detail,age,nationality,market_value_m,contract_expiry,is_foreign
-Oufa Shobeir,GK,Goalkeeper,26,Egyptian,1.20,2027-06-30,False
-Mohamed El Shenawy,GK,Goalkeeper,37,Egyptian,0.50,2027-06-30,False
-Mohamed Seha,GK,Goalkeeper,25,Egyptian,0.15,2030-06-30,False
-Hamza Alaa,GK,Goalkeeper,25,Egyptian,0.08,2029-06-30,False
-Beckham,CB,Centre-Back,29,Egyptian,0.80,2026-06-30,False
-Yassin Marei,CB,Centre-Back,24,Egyptian,0.70,2030-06-30,False
-Hady Reyad,CB,Centre-Back,27,Egyptian,0.70,2030-06-30,False
-Amr El Gazar,CB,Centre-Back,26,Egyptian,0.45,2030-06-30,False
-Yasser Ibrahim,CB,Centre-Back,33,Egyptian,0.28,2027-06-30,False
-Youssef Belammari,FB,Left-Back,27,Moroccan,1.20,2029-06-30,True
-Mohamed Shokry,FB,Left-Back,26,Egyptian,0.40,2030-06-30,False
-Karim Fouad,FB,Left-Back,26,Egyptian,0.18,2028-06-30,False
-Mohamed Hany,FB,Right-Back,30,Egyptian,1.50,2027-06-30,False
-Ahmed Eid,FB,Right-Back,25,Egyptian,0.20,2029-06-30,False
-Marwan Ateya,DM,Defensive Midfield,27,Egyptian,4.00,2029-06-30,False
-Aliou Dieng,DM,Defensive Midfield,28,Malian,3.00,2026-06-30,True
-Ahmed Kouka,DM,Defensive Midfield,24,Egyptian,1.20,2026-06-30,False
-Emam Ashour,CM,Central Midfield,28,Egyptian,4.00,2028-06-30,False
-Mohamed Ali Ben Romdhane,CM,Central Midfield,26,Tunisian,0.90,2029-06-30,True
-Trezeguet,W,Left Winger,31,Egyptian,4.50,2030-06-30,False
-Achraf Bencharki,W,Left Winger,31,Moroccan,2.20,2027-06-30,True
-Hussein El Shahat,W,Left Winger,33,Egyptian,0.30,2026-06-30,False
-Zizo,W,Right Winger,30,Egyptian,3.50,2030-06-30,False
-Taher Mohamed,W,Right Winger,29,Egyptian,0.40,2027-06-30,False
-Mohamed Sherif,ST,Centre-Forward,30,Egyptian,0.50,2030-06-30,False
-Marwan Otaka,ST,Centre-Forward,23,Egyptian,0.30,2026-06-30,False
+player,position_group,position_detail,age,nationality,market_value_m,contract_expiry,is_foreign,goals_2425,assists_2425,minutes_2425
+Oufa Shobeir,GK,Goalkeeper,26,Egyptian,1.2,2027-06-30,False,0,0,2340
+Mohamed El Shenawy,GK,Goalkeeper,37,Egyptian,0.5,2027-06-30,False,0,0,630
+Mohamed Seha,GK,Goalkeeper,25,Egyptian,0.15,2030-06-30,False,0,0,90
+Hamza Alaa,GK,Goalkeeper,25,Egyptian,0.08,2029-06-30,False,0,0,0
+Beckham,CB,Centre-Back,29,Egyptian,0.8,2026-06-30,False,2,1,2070
+Yassin Marei,CB,Centre-Back,24,Egyptian,0.7,2030-06-30,False,1,0,1890
+Hady Reyad,CB,Centre-Back,27,Egyptian,0.7,2030-06-30,False,0,1,2340
+Amr El Gazar,CB,Centre-Back,26,Egyptian,0.45,2030-06-30,False,1,0,1440
+Yasser Ibrahim,CB,Centre-Back,33,Egyptian,0.28,2027-06-30,False,0,0,1080
+Youssef Belammari,FB,Left-Back,27,Moroccan,1.2,2029-06-30,True,1,5,2160
+Mohamed Shokry,FB,Left-Back,26,Egyptian,0.4,2030-06-30,False,0,2,1350
+Karim Fouad,FB,Left-Back,26,Egyptian,0.18,2028-06-30,False,0,1,720
+Mohamed Hany,FB,Right-Back,30,Egyptian,1.5,2027-06-30,False,1,4,2250
+Ahmed Eid,FB,Right-Back,25,Egyptian,0.2,2029-06-30,False,0,2,900
+Marwan Ateya,DM,Defensive Midfield,27,Egyptian,4.0,2029-06-30,False,3,4,2430
+Aliou Dieng,DM,Defensive Midfield,28,Malian,3.0,2026-06-30,True,2,3,2160
+Ahmed Kouka,DM,Defensive Midfield,24,Egyptian,1.2,2026-06-30,False,1,2,1350
+Emam Ashour,CM,Central Midfield,28,Egyptian,4.0,2028-06-30,False,5,7,2070
+Mohamed Ali Ben Romdhane,CM,Central Midfield,26,Tunisian,0.9,2029-06-30,True,3,4,1800
+Trezeguet,W,Left Winger,31,Egyptian,4.5,2030-06-30,False,7,5,1980
+Achraf Bencharki,W,Left Winger,31,Moroccan,2.2,2027-06-30,True,6,4,1710
+Hussein El Shahat,W,Left Winger,33,Egyptian,0.3,2026-06-30,False,4,4,1440
+Zizo,W,Right Winger,30,Egyptian,3.5,2030-06-30,False,8,6,2250
+Taher Mohamed,W,Right Winger,29,Egyptian,0.4,2027-06-30,False,3,3,1530
+Mohamed Sherif,ST,Centre-Forward,30,Egyptian,0.5,2030-06-30,False,14,3,1890
+Marwan Otaka,ST,Centre-Forward,23,Egyptian,0.3,2026-06-30,False,6,2,1260
