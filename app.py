@@ -591,11 +591,10 @@ def build_tab2():
                 dcc.Checklist(
                     id="t2-leagues-target",
                     options=[
-                        {"label": f" {l}  ({_LEAGUE_COUNTS.get(l, 0):,})", "value": l}
+                        {"label": f" {l} ({_LEAGUE_COUNTS.get(l, 0)})", "value": l}
                         for l in TARGET_LEAGUE_ORDER
-                        if l in _LEAGUE_COUNTS
                     ],
-                    value=[l for l in TARGET_LEAGUE_ORDER if l in _LEAGUE_COUNTS],
+                    value=list(TARGET_LEAGUE_ORDER),
                     inputStyle={"marginRight": "5px"},
                     labelStyle={"display": "block", "marginBottom": "3px",
                                 "fontSize": "11px", "color": TEXT, "fontFamily": FONT},
@@ -607,18 +606,16 @@ def build_tab2():
                 dcc.Checklist(
                     id="t2-leagues-big5",
                     options=[
-                        {"label": f" {l}  ({_LEAGUE_COUNTS.get(l, 0):,})", "value": l}
+                        {"label": f" {l} ({_LEAGUE_COUNTS.get(l, 0)})", "value": l}
                         for l in BIG5_LEAGUE_ORDER
-                        if l in _LEAGUE_COUNTS
                     ],
-                    value=[],          # unchecked by default
+                    value=[],
                     inputStyle={"marginRight": "5px"},
                     labelStyle={"display": "block", "marginBottom": "3px",
                                 "fontSize": "11px", "color": TEXT_MUTED, "fontFamily": FONT},
                 ),
                 # Hidden combined store read by the filter callback
-                dcc.Store(id="t2-leagues", data=[l for l in TARGET_LEAGUE_ORDER
-                                                  if l in _LEAGUE_COUNTS]),
+                dcc.Store(id="t2-leagues", data=list(TARGET_LEAGUE_ORDER)),
 
                 html.Hr(style={"borderColor": BORDER, "margin": "12px 0"}),
                 html.Label("Player Criteria",
@@ -1543,18 +1540,14 @@ def navigate_to_discovery(n_clicks_list):
     prevent_initial_call=True,
 )
 def handle_league_buttons(all_clicks, target_clicks):
-    from dash import ctx
-    triggered = ctx.triggered_id
-    if triggered == "t2-all-leagues-btn":
-        return (
-            [l for l in TARGET_LEAGUE_ORDER if l in _LEAGUE_COUNTS],
-            [l for l in BIG5_LEAGUE_ORDER   if l in _LEAGUE_COUNTS],
-        )
+    ctx = callback_context
+    if not ctx.triggered:
+        return no_update, no_update
+    triggered_id = ctx.triggered[0]["prop_id"].split(".")[0]
+    if triggered_id == "t2-all-leagues-btn":
+        return list(TARGET_LEAGUE_ORDER), list(BIG5_LEAGUE_ORDER)
     # "Target Only" — reset to default
-    return (
-        [l for l in TARGET_LEAGUE_ORDER if l in _LEAGUE_COUNTS],
-        [],
-    )
+    return list(TARGET_LEAGUE_ORDER), []
 
 
 # Tab 2 — merge two league checklists into combined store
