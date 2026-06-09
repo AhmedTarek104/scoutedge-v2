@@ -570,6 +570,20 @@ def build_tab2():
                                     "fontFamily": FONT, "fontSize": "13px"}),
 
                 # ── League selector — two groups ─────────────────────────
+                html.Div([
+                    html.Button("✓ All Leagues", id="t2-all-leagues-btn",
+                                n_clicks=0,
+                                style={"fontSize":"10px","padding":"2px 7px",
+                                       "marginRight":"4px","cursor":"pointer",
+                                       "background":"#2A2A2A","color":"#F5F5F5",
+                                       "border":"1px solid #444","borderRadius":"3px"}),
+                    html.Button("Target Only", id="t2-target-only-btn",
+                                n_clicks=0,
+                                style={"fontSize":"10px","padding":"2px 7px",
+                                       "cursor":"pointer",
+                                       "background":"#2A2A2A","color":"#FFB300",
+                                       "border":"1px solid #444","borderRadius":"3px"}),
+                ], style={"marginBottom":"6px"}),
                 html.Div("Al Ahly Target Leagues",
                          style={"color": AMBER, "fontSize": "10px", "fontWeight": "700",
                                 "letterSpacing": "0.5px", "textTransform": "uppercase",
@@ -1519,6 +1533,29 @@ def navigate_to_discovery(n_clicks_list):
     if all(n == 0 for n in (n_clicks_list or [])):
         return no_update, no_update
     return "tab-discovery", pos
+
+# Tab 2 — utility buttons: "All Leagues" and "Target Only"
+@app.callback(
+    [Output("t2-leagues-target", "value"),
+     Output("t2-leagues-big5",   "value")],
+    [Input("t2-all-leagues-btn",  "n_clicks"),
+     Input("t2-target-only-btn",  "n_clicks")],
+    prevent_initial_call=True,
+)
+def handle_league_buttons(all_clicks, target_clicks):
+    from dash import ctx
+    triggered = ctx.triggered_id
+    if triggered == "t2-all-leagues-btn":
+        return (
+            [l for l in TARGET_LEAGUE_ORDER if l in _LEAGUE_COUNTS],
+            [l for l in BIG5_LEAGUE_ORDER   if l in _LEAGUE_COUNTS],
+        )
+    # "Target Only" — reset to default
+    return (
+        [l for l in TARGET_LEAGUE_ORDER if l in _LEAGUE_COUNTS],
+        [],
+    )
+
 
 # Tab 2 — merge two league checklists into combined store
 @app.callback(

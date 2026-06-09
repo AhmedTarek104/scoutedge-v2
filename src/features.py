@@ -239,10 +239,41 @@ def run():
     df = compute_contract_flag(df)
     df = compute_age_context(df)
 
-    # 4g. Save
+    # 4g. Save — only keep columns needed by app.py and similarity.py
+    keep = [
+        # identity
+        "player", "team", "league", "league_clean", "nationality",
+        "position_raw", "position_group", "age", "birth_year",
+        # raw stats used by profile/comparison
+        "minutes", "goals", "assists", "xg", "xag", "npxg",
+        "shots", "shots_on_target",
+        "progressive_carries", "progressive_passes", "progressive_receives",
+        "key_passes", "tackles", "tackles_won", "interceptions",
+        "blocks", "clearances", "crosses",
+        "dribbles_completed", "dribbles_attempted",
+        "aerial_duels_won_pct", "pass_completion_rate", "passes_final_third",
+        # per-90 metrics
+        "goals_p90", "assists_p90", "xg_p90", "xag_p90", "npxg_p90",
+        "shots_p90", "shots_on_target_p90",
+        "progressive_carries_p90", "progressive_passes_p90", "progressive_receives_p90",
+        "key_passes_p90", "tackles_p90", "tackles_won_p90",
+        "interceptions_p90", "blocks_p90", "clearances_p90",
+        "crosses_p90", "dribbles_completed_p90", "dribbles_attempted_p90",
+        "passes_final_third_p90",
+        # efficiency
+        "shot_accuracy", "dribble_success_rate", "tackle_success_rate", "goals_per_shot",
+        # scores & meta
+        "league_difficulty", "league_tier",
+        "raw_scouting_score", "adjusted_scouting_score",
+        "market_value_m", "contract_expiry",
+        "valuation_status", "contract_expiring",
+        "position_median_mv", "value_gap_m", "value_gap_pct",
+        "age_score_context",
+    ]
+    save_cols = [c for c in keep if c in df.columns]
     out = DATA_FINAL / "players_final.csv"
-    df.to_csv(out, index=False)
-    print(f"\nSaved: {out}")
+    df[save_cols].to_csv(out, index=False)
+    print(f"\nSaved: {out} ({len(save_cols)} columns)")
 
     # ── Tests ──────────────────────────────────────────────────────────────────
     print("\n" + "="*60)

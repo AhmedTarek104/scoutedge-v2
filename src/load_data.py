@@ -70,7 +70,8 @@ def map_positions(df):
     mask = df["position_group"].isna()
     if mask.any():
         df.loc[mask, "position_group"] = (
-            df.loc[mask, "position_raw"].str.split(",").str[0].map(POSITION_GROUP_MAP)
+            df.loc[mask, "position_raw"].fillna("").astype(str)
+              .str.split(",").str[0].map(POSITION_GROUP_MAP)
         )
     df["position_group"] = df["position_group"].fillna("UNK")
     print("\nPosition group distribution:")
@@ -199,9 +200,99 @@ def add_market_values(df):
     return df_merged
 
 
+# ── Extra-league loader ────────────────────────────────────────────────────────
+# Raw league names chosen so that clean_league() produces the key used in
+# LEAGUE_DIFFICULTY (e.g. "tr Super Lig" → strip "tr " → "Super Lig").
+# Brazil uses "(Brazil)" suffix to distinguish from Italian "Serie A".
+# Scotland uses "sct" 3-char prefix so the regex strips it cleanly.
+
+EXTRA_LEAGUE_CODES = {
+    "TUR": "tr Super Lig",
+    "NED": "nl Eredivisie",
+    "POR": "pt Primeira Liga",
+    "DEN": "dk Superliga",
+    "BEL": "be Belgian Pro League",
+    "BRA": "br Serie A (Brazil)",
+    "ARG": "ar Primera Division",
+    "SCO": "sct Scottish Premiership",
+}
+
+_STD_RENAME = {
+    "Player": "player", "Squad": "team", "Pos": "position_raw",
+    "Age": "age", "Born": "birth_year", "Nation": "nationality",
+    "Playing Time_Min": "minutes", "Playing Time_90s": "minutes_90s",
+    "Performance_Gls": "goals", "Performance_Ast": "assists",
+}
+_SHOOT_RENAME  = {"Standard_Sh": "shots", "Standard_SoT": "shots_on_target"}
+_PASS_RENAME   = {"Total_Cmp%": "pass_completion_rate",
+                  "KP": "key_passes", "1/3": "passes_final_third"}
+_POSS_RENAME   = {"Take-Ons_Succ": "dribbles_completed",
+                  "Take-Ons_Att": "dribbles_attempted"}
+_DEF_RENAME    = {"Tackles_Tkl": "tackles", "Tackles_TklW": "tackles_won",
+                  "Int": "interceptions", "Blocks": "blocks", "Clr": "clearances"}
+_MISC_RENAME   = {"Performance_Crs": "crosses"}
+
+
+def load_extra_leagues_data():
+    """Load the 8 non-Big5 FBref league CSV files and return a combined dataframe
+    with the same column names as the Big-5 dataset."""
+    all_dfs = []
+
+    for code, raw_league in EXTRA_LEAGUE_CODES.items():
+        std_path = DATA_RAW / f"fbref_{code}_standard.csv"
+        if not std_path.exists():
+            print(f"  [SKIP] {code}: {std_path} not found")
+            continue
+
+        std = pd.read_csv(std_path, low_memory=False)
+        std = std.rename(columns=_STD_RENAME)
+        std["league"] = raw_league
+
+        core = [c for c in ["player","team","league","position_raw","age","birth_year",
+                             "nationality","minutes","minutes_90s","goals","assists"]
+                if c in std.columns]
+        df = std[core].copy()
+
+        # FBref extra-league files store age as "YY-DDD" — extract year part
+        if "age" in df.columns:
+            df["age"] = df["age"].astype(str).str.split("-").str[0]
+            df["age"] = pd.to_numeric(df["age"], errors="coerce")
+
+        def _merge(path, rename):
+            nonlocal df
+            if not path.exists():
+                return
+            extra = pd.read_csv(path, low_memory=False).rename(columns=rename)
+            # normalise key columns
+            extra = extra.rename(columns={"Player": "player", "Squad": "team"})
+            new_cols = [c for c in rename.values() if c in extra.columns]
+            if not new_cols:
+                return
+            extra_sub = (extra[["player", "team"] + new_cols]
+                         .drop_duplicates(["player", "team"]))
+            df = df.merge(extra_sub, on=["player", "team"], how="left")
+
+        _merge(DATA_RAW / f"fbref_{code}_shooting.csv",   _SHOOT_RENAME)
+        _merge(DATA_RAW / f"fbref_{code}_passing.csv",    _PASS_RENAME)
+        _merge(DATA_RAW / f"fbref_{code}_possession.csv", _POSS_RENAME)
+        _merge(DATA_RAW / f"fbref_{code}_defense.csv",    _DEF_RENAME)
+        _merge(DATA_RAW / f"fbref_{code}_misc.csv",       _MISC_RENAME)
+
+        all_dfs.append(df)
+        print(f"  {code}: {len(df)} players  ({raw_league})")
+
+    if not all_dfs:
+        return pd.DataFrame()
+
+    combined = pd.concat(all_dfs, ignore_index=True)
+    print(f"  Extra-league total: {len(combined)} players across {len(all_dfs)} leagues")
+    return combined
+
+
 def run():
-    df = load_raw()
-    df = rename_columns(df)
+    # ── Big 5 ─────────────────────────────────────────────────────────────────
+    df_big5 = load_raw()
+    df_big5 = rename_columns(df_big5)
 
     stat_cols = ["age","minutes","minutes_90s","goals","assists","xg","xag","npxg",
                  "shots","shots_on_target","progressive_carries","progressive_passes",
@@ -210,8 +301,22 @@ def run():
                  "dribbles_attempted","aerial_duels_won_pct","pass_completion_rate",
                  "passes_final_third","birth_year"]
     for col in stat_cols:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+        if col in df_big5.columns:
+            df_big5[col] = pd.to_numeric(df_big5[col], errors="coerce")
+
+    # ── Extra leagues ──────────────────────────────────────────────────────────
+    print("\nLoading extra-league data...")
+    df_extra = load_extra_leagues_data()
+
+    if not df_extra.empty:
+        for col in stat_cols:
+            if col in df_extra.columns:
+                df_extra[col] = pd.to_numeric(df_extra[col], errors="coerce")
+        df = pd.concat([df_big5, df_extra], ignore_index=True)
+        print(f"\nCombined total: {len(df)} players ({len(df_big5)} Big5 + {len(df_extra)} extra)")
+    else:
+        df = df_big5
+        print("No extra-league data loaded — using Big 5 only")
 
     df = map_positions(df)
     df = apply_filters(df)
