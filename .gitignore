@@ -1,8 +1,14 @@
-data/raw/
 __pycache__/
 *.pyc
+*.pkl
+data/raw/
+data/processed/
+.temp/
+*.log
 .env
 *.egg-info/
 .venv/
-_gen_app.py
-app_run.log
+app_err.txt
+app_out.txt
+scripts/
+outputs/
