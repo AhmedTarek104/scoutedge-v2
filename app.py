@@ -24,6 +24,35 @@ DF["minutes"]              = pd.to_numeric(DF["minutes"],              errors="c
 DF["adjusted_scouting_score"] = pd.to_numeric(DF["adjusted_scouting_score"], errors="coerce")
 DF["raw_scouting_score"]   = pd.to_numeric(DF["raw_scouting_score"],   errors="coerce")
 DF["contract_expiring"]    = DF["contract_expiring"].astype(str).str.lower().isin(["true","1","yes"])
+
+# Pre-compute estimated MV for players with null market_value_m
+# Median of valued peers grouped by (position, league, age_bucket)
+def _age_bucket(age):
+    if pd.isna(age): return "unk"
+    a = int(age)
+    if a <= 21: return "u22"
+    if a <= 24: return "22-24"
+    if a <= 27: return "25-27"
+    if a <= 29: return "28-29"
+    return "30p"
+
+DF["_age_bucket"] = DF["age"].apply(_age_bucket)
+_valued = DF[DF["market_value_m"].notna()]
+_mv_med_full = _valued.groupby(["position_group","league_clean","_age_bucket"])["market_value_m"].median()
+_mv_med_pos  = _valued.groupby(["position_group","_age_bucket"])["market_value_m"].median()
+
+def _est_mv(r):
+    if pd.notna(r["market_value_m"]):
+        return np.nan
+    k3 = (r["position_group"], r["league_clean"], r["_age_bucket"])
+    if k3 in _mv_med_full.index:
+        return round(float(_mv_med_full[k3]), 1)
+    k2 = (r["position_group"], r["_age_bucket"])
+    if k2 in _mv_med_pos.index:
+        return round(float(_mv_med_pos[k2]), 1)
+    return np.nan
+
+DF["estimated_mv_m"] = DF.apply(_est_mv, axis=1)
 print(f"  {len(DF)} players loaded")
 
 SQUAD_CSV = ROOT / "data" / "al_ahly_squad.csv"
@@ -657,6 +686,22 @@ def build_tab2():
                                            "fontSize": "12px", "color": TEXT, "fontFamily": FONT}),
 
                 html.Hr(style={"borderColor": BORDER, "margin": "12px 0"}),
+                html.Label("MV Data",
+                           style={"color": TEXT_MUTED, "fontSize": "11px",
+                                  "fontWeight": "700", "fontFamily": FONT,
+                                  "display": "block", "marginBottom": "4px"}),
+                dcc.RadioItems(id="t2-mv-source",
+                               options=[
+                                   {"label": " All players",      "value": "all"},
+                                   {"label": " Valued only",      "value": "valued"},
+                                   {"label": " Estimated only",   "value": "estimated"},
+                               ],
+                               value="all",
+                               inputStyle={"marginRight": "5px"},
+                               labelStyle={"display": "block", "marginBottom": "3px",
+                                           "fontSize": "12px", "color": TEXT, "fontFamily": FONT}),
+
+                html.Hr(style={"borderColor": BORDER, "margin": "12px 0"}),
                 html.Label("Sort By",
                            style={"color": TEXT_MUTED, "fontSize": "11px",
                                   "fontWeight": "700", "fontFamily": FONT}),
@@ -1131,7 +1176,13 @@ def _profile_content(player_name, shortlist):
 
     avail, total = stat_coverage(r, pos)
 
-    mv_badge   = badge(f"€{mv:.2f}m" if pd.notna(mv) else "–", BLUE, BLUE + "22")
+    mv_est = r.get("estimated_mv_m")
+    if pd.notna(mv):
+        mv_badge = badge(f"€{mv:.2f}m", BLUE, BLUE + "22")
+    elif pd.notna(mv_est):
+        mv_badge = badge(f"~€{mv_est:.1f}m est.", TEXT_MUTED, TEXT_MUTED + "22")
+    else:
+        mv_badge = badge("–", TEXT_MUTED, TEXT_MUTED + "22")
     exp_badge  = badge("⚡ Expiring", AMBER, AMBER + "22") if exp else None
     cov_badge  = coverage_badge(avail, total)
     age_ctx    = str(r.get("age_score_context", ""))
@@ -1319,7 +1370,13 @@ def _profile_content(player_name, shortlist):
             tgt_val  = r.get(col)
             ahly_val = ahly_p.get(col)
             if col == "market_value_m":
-                tgt_str  = f"€{tgt_val:.2f}m"  if pd.notna(tgt_val)  else "–"
+                tgt_est = r.get("estimated_mv_m")
+                if pd.notna(tgt_val):
+                    tgt_str = f"€{tgt_val:.2f}m"
+                elif pd.notna(tgt_est):
+                    tgt_str = f"~€{tgt_est:.1f}m est."
+                else:
+                    tgt_str = "–"
                 ahly_str = f"€{ahly_val:.2f}m" if pd.notna(ahly_val) else "–"
             elif col == "adjusted_scouting_score":
                 # Target: show their season goals/assists from DF
@@ -1450,14 +1507,22 @@ def refresh_sim_players(toggle_val, player_name):
     if sim_df.empty:
         sim_section = html.P("No similar players found.", style={"color": TEXT_MUTED, "fontFamily": FONT})
     else:
+        est_mv_map2 = DF.set_index("player")["estimated_mv_m"].to_dict()
         sim_data = []
         for _, sr in sim_df.iterrows():
-            smv = sr.get("market_value_m")
+            smv     = sr.get("market_value_m")
+            smv_est = est_mv_map2.get(sr["player"])
+            if pd.notna(smv):
+                mv_col = f"€{smv:.2f}m"
+            elif pd.notna(smv_est):
+                mv_col = f"~€{smv_est:.1f}m est."
+            else:
+                mv_col = "–"
             sim_data.append({
                 "★": "☆", "Player": sr["player"], "Club": sr.get("team", ""),
                 "League": sr.get("league_clean", ""),
                 "Age":    int(sr["age"]) if pd.notna(sr["age"]) else "–",
-                "MV (€m)": f"€{smv:.2f}m" if pd.notna(smv) else "–",
+                "MV (€m)": mv_col,
                 "Sim%":   f"{sr['similarity_pct']:.0f}%",
                 "Score":  round(float(sr["adjusted_scouting_score"]), 1) if pd.notna(sr.get("adjusted_scouting_score")) else "–",
             })
@@ -1471,7 +1536,18 @@ def refresh_sim_players(toggle_val, player_name):
                  "color": AMBER, "cursor": "pointer"},
                 {"if": {"column_id": "Sim%"}, "textAlign": "center", "fontWeight": "700"},
             ],
-            style_data_conditional=[{"if": {"row_index": "odd"}, "background": BG_CARD2}],
+            style_data_conditional=[
+                {"if": {"row_index": "odd"}, "background": BG_CARD2},
+                {"if": {"filter_query": '{MV (€m)} contains "~"', "column_id": "MV (€m)"},
+                 "color": TEXT_MUTED, "fontStyle": "italic"},
+            ],
+            tooltip_data=[
+                {"MV (€m)": {"value": "Estimated — no Transfermarkt data", "type": "markdown"}}
+                if "~" in (row.get("MV (€m)", "") or "") else {}
+                for row in sim_data
+            ],
+            tooltip_delay=0,
+            tooltip_duration=None,
         )
 
     avail, _ = stat_coverage(player_row.iloc[0] if not player_row.empty else pd.Series(), pos)
@@ -1612,11 +1688,12 @@ def set_nav_position(pos):
      State("t2-filter-def",   "value"),
      State("t2-filter-goal",  "value"),
      State("t2-filter-prog",  "value"),
+     State("t2-mv-source",    "value"),
      State("shortlist-store", "data")],
     prevent_initial_call=True,
 )
 def update_discovery(apply_n, reset_n, pos, leagues, max_age, max_mv, min_mins,
-                     contract, sort_by, filter_def, filter_goal, filter_prog, shortlist):
+                     contract, sort_by, filter_def, filter_goal, filter_prog, mv_source, shortlist):
     ctx = callback_context
     if not ctx.triggered or not pos:
         return (html.P("Select a position to load results.",
@@ -1645,6 +1722,10 @@ def update_discovery(apply_n, reset_n, pos, leagues, max_age, max_mv, min_mins,
         df = df[df["minutes"].fillna(0) >= min_mins]
     if contract == "expiring":
         df = df[df["contract_expiring"] == True]
+    if mv_source == "valued":
+        df = df[df["market_value_m"].notna()]
+    elif mv_source == "estimated":
+        df = df[df["market_value_m"].isna() & df["estimated_mv_m"].notna()]
 
     # ── 3 Boolean Filters ────────────────────────────────────────────────────
     # Thresholds computed on the FULL position group (not just the filtered subset)
@@ -1718,7 +1799,14 @@ def update_discovery(apply_n, reset_n, pos, leagues, max_age, max_mv, min_mins,
     table_data = []
     for _, r in df.iterrows():
         star = "★" if r["player"] in shortlist_names else "☆"
-        mv_str = f"€{r['market_value_m']:.2f}m" if pd.notna(r["market_value_m"]) else "–"
+        mv_real = r.get("market_value_m")
+        mv_est  = r.get("estimated_mv_m")
+        if pd.notna(mv_real):
+            mv_str = f"€{mv_real:.2f}m"
+        elif pd.notna(mv_est):
+            mv_str = f"~€{mv_est:.1f}m est."
+        else:
+            mv_str = "–"
         contract_ico = "⚡" if r.get("contract_expiring") else ""
         r_avail, _ = stat_coverage(r, pos)
         age_ctx = age_stage_emoji(r.get("age_score_context", ""))
@@ -1775,6 +1863,13 @@ def update_discovery(apply_n, reset_n, pos, leagues, max_age, max_mv, min_mins,
         style_data_conditional=[
             {"if": {"row_index": "odd"}, "background": BG_CARD2},
             {"if": {"filter_query": '{★} = "★"'}, "color": AMBER},
+            {"if": {"filter_query": '{MV (€m)} contains "~"', "column_id": "MV (€m)"},
+             "color": TEXT_MUTED, "fontStyle": "italic"},
+        ],
+        tooltip_data=[
+            {"MV (€m)": {"value": "Estimated — no Transfermarkt data", "type": "markdown"}}
+            if "~" in (row.get("MV (€m)", "") or "") else {}
+            for row in table_data
         ],
         active_cell=None,
         tooltip_delay=0,
@@ -2172,9 +2267,17 @@ def find_replacements(n, player_name, budget, max_age, diff_league, tgt_only):
                    style={"color": TEXT_MUTED, "fontFamily": FONT}),
         ])
 
+    est_mv_map3 = DF.set_index("player")["estimated_mv_m"].to_dict()
     rows = []
     for _, sr in res_df.iterrows():
-        smv = sr.get("market_value_m")
+        smv     = sr.get("market_value_m")
+        smv_est = est_mv_map3.get(sr["player"])
+        if pd.notna(smv):
+            mv_col = f"€{smv:.2f}m"
+        elif pd.notna(smv_est):
+            mv_col = f"~€{smv_est:.1f}m est."
+        else:
+            mv_col = "–"
         sim_pct = float(sr.get("similarity_pct", 0))
         rows.append({
             "★":       "☆",
@@ -2182,7 +2285,7 @@ def find_replacements(n, player_name, budget, max_age, diff_league, tgt_only):
             "Club":    sr.get("team", ""),
             "League":  sr.get("league_clean", ""),
             "Age":     int(sr["age"]) if pd.notna(sr["age"]) else "–",
-            "MV (€m)": f"€{smv:.2f}m" if pd.notna(smv) else "–",
+            "MV (€m)": mv_col,
             "Sim%":    f"{sim_pct:.0f}%",
             "Score":   round(float(sr.get("adjusted_scouting_score", 0)), 1),
             "Exp":     "⚡" if sr.get("contract_expiring") else "",
@@ -2204,7 +2307,16 @@ def find_replacements(n, player_name, budget, max_age, diff_league, tgt_only):
             {"if": {"row_index": "odd"}, "background": BG_CARD2},
             {"if": {"filter_query": '{Sim%} contains "8" && {Sim%} != "–"'},
              "background": GREEN + "11"},
+            {"if": {"filter_query": '{MV (€m)} contains "~"', "column_id": "MV (€m)"},
+             "color": TEXT_MUTED, "fontStyle": "italic"},
         ],
+        tooltip_data=[
+            {"MV (€m)": {"value": "Estimated — no Transfermarkt data", "type": "markdown"}}
+            if "~" in (row.get("MV (€m)", "") or "") else {}
+            for row in rows
+        ],
+        tooltip_delay=0,
+        tooltip_duration=None,
     )
 
     return html.Div([
