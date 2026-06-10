@@ -243,7 +243,7 @@ def run():
     keep = [
         # identity
         "player", "team", "league", "league_clean", "nationality",
-        "position_raw", "position_group", "age", "birth_year",
+        "position_raw", "position_group", "age", "birth_year", "fbref_id",
         # raw stats used by profile/comparison
         "minutes", "goals", "assists", "xg", "xag", "npxg",
         "shots", "shots_on_target",

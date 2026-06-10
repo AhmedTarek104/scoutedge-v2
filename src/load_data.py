@@ -2,7 +2,6 @@
 from pathlib import Path
 import pandas as pd
 import numpy as np
-from rapidfuzz import fuzz, process
 
 sys.path.insert(0, str(Path(__file__).parent))
 from config import (DATA_RAW, DATA_PROC, POSITION_GROUP_MAP, LEAGUE_DIFFICULTY,
@@ -131,73 +130,101 @@ def add_league_difficulty(df):
 
 
 def add_market_values(df):
-    players_tm = pd.read_csv(DATA_RAW / "players.csv", low_memory=False,
-                              usecols=["player_id", "name", "contract_expiration_date"])
+    """
+    ID-based market value join — no fuzzy name matching.
 
+    Pipeline:
+      1. mapping: PlayerFBref name → fbref_id (8-char hex) + tm_player_id (numeric)
+      2. valuations: tm_player_id → latest market_value_m + contract_expiry
+      3. df: player name → fbref_id via EXACT name match to mapping
+      4. df: fbref_id → market_value_m via pure ID join
+
+    Name collisions in the mapping (two players sharing a name) are resolved by
+    keeping the highest-MV entry — the notable player is almost always the more
+    valuable one.
+    """
+    # ── 1. Build fbref_id → tm_player_id bridge from mapping ─────────────────
+    # File is UTF-8 with some stray latin-1 bytes; errors='replace' handles both.
+    mapping = pd.read_csv(DATA_RAW / "fbref_tm_mapping.csv",
+                          encoding="utf-8", encoding_errors="replace",
+                          low_memory=False)
+    mapping["fbref_id"]    = mapping["UrlFBref"].str.extract(r"/players/([a-f0-9]{8})/")
+    mapping["tm_player_id"] = (mapping["UrlTmarkt"]
+                                .str.extract(r"/spieler/(\d+)")[0]
+                                .astype("Int64"))
+    mapping = mapping.dropna(subset=["fbref_id", "tm_player_id"])
+
+    # ── 2. Latest market value per TM player ──────────────────────────────────
     vals = pd.read_csv(DATA_RAW / "player_valuations.csv", low_memory=False,
                        usecols=["player_id", "date", "market_value_in_eur"])
     vals["date"] = pd.to_datetime(vals["date"], errors="coerce")
-    latest_vals = (vals.sort_values("date")
-                       .groupby("player_id", as_index=False)
-                       .last()[["player_id", "market_value_in_eur"]])
-    latest_vals["market_value_m"] = latest_vals["market_value_in_eur"] / 1e6
+    latest_mv = (vals.sort_values("date")
+                     .groupby("player_id", as_index=False)
+                     .last()[["player_id", "market_value_in_eur"]])
+    latest_mv["market_value_m"] = (latest_mv["market_value_in_eur"] / 1e6).round(2)
+    latest_mv = latest_mv.rename(columns={"player_id": "tm_player_id"})
+    latest_mv["tm_player_id"] = latest_mv["tm_player_id"].astype("Int64")
 
-    tm_data = players_tm.merge(latest_vals, on="player_id", how="left")
-    tm_data = tm_data.rename(columns={"contract_expiration_date": "contract_expiry"})
+    # Contract expiry from TM players table
+    players_tm = pd.read_csv(DATA_RAW / "players.csv", low_memory=False,
+                              usecols=["player_id", "contract_expiration_date"])
+    players_tm = players_tm.rename(columns={
+        "player_id": "tm_player_id",
+        "contract_expiration_date": "contract_expiry",
+    })
+    players_tm["tm_player_id"] = players_tm["tm_player_id"].astype("Int64")
 
-    mapping = pd.read_csv(DATA_RAW / "fbref_tm_mapping.csv", encoding="latin-1", low_memory=False)
-    mapping["player_id"] = mapping["UrlTmarkt"].str.extract(r"/spieler/(\d+)")[0].astype("Int64")
-    mapping = mapping.dropna(subset=["player_id"])
-    mapping["player_id"] = mapping["player_id"].astype(int)
+    # ── 3. Build fbref_id → MV + contract_expiry lookup ───────────────────────
+    bridge = (mapping[["fbref_id", "tm_player_id", "PlayerFBref"]]
+              .merge(latest_mv[["tm_player_id", "market_value_m"]], on="tm_player_id", how="left")
+              .merge(players_tm, on="tm_player_id", how="left"))
 
-    mapping_with_vals = mapping.merge(tm_data, on="player_id", how="left")
-    mapping_with_vals["player_lower"] = mapping_with_vals["PlayerFBref"].str.lower().str.strip()
+    # One row per fbref_id — keep highest MV when same fbref_id has multiple entries
+    id_lookup = (bridge.sort_values("market_value_m", ascending=False)
+                       .drop_duplicates("fbref_id")
+                       [["fbref_id", "market_value_m", "contract_expiry"]])
 
+    # Name lookup: player_lower → fbref_id (exact FBref names, same source as raw data)
+    # When name collides across different players, keep highest MV
+    bridge["player_lower"] = bridge["PlayerFBref"].str.lower().str.strip()
+    name_to_id = (bridge.sort_values("market_value_m", ascending=False)
+                        .drop_duplicates("player_lower")
+                        [["player_lower", "fbref_id"]])
+
+    # ── 4. Add fbref_id to df via exact name match ────────────────────────────
+    df = df.copy()
     df["player_lower"] = df["player"].str.lower().str.strip()
+    df = df.merge(name_to_id, on="player_lower", how="left")
 
-    mv_lookup = (mapping_with_vals[["player_lower", "market_value_m", "contract_expiry"]]
-                 .sort_values("market_value_m", ascending=False)
-                 .drop_duplicates("player_lower"))
+    matched_id = df["fbref_id"].notna().sum()
+    print(f"\nfbref_id matched (exact name): {matched_id}/{len(df)}")
 
-    df_merged = df.merge(mv_lookup, on="player_lower", how="left")
+    # ── 5. Pure ID join: fbref_id → market_value_m + contract_expiry ─────────
+    df = df.merge(id_lookup, on="fbref_id", how="left")
 
-    matched_primary = df_merged["market_value_m"].notna().sum()
-    print(f"\nMarket value primary (exact via mapping): {matched_primary}/{len(df_merged)}")
+    matched_mv = df["market_value_m"].notna().sum()
+    null_mv    = df["market_value_m"].isna().sum()
+    pct = matched_mv / len(df) * 100
+    print(f"MV matched via ID:  {matched_mv}/{len(df)} ({pct:.1f}%)")
+    print(f"MV null (no match): {null_mv}")
 
-    unmatched_mask = df_merged["market_value_m"].isna()
-    n_unmatched = unmatched_mask.sum()
+    df = df.drop(columns=["player_lower"], errors="ignore")
 
-    if n_unmatched > 0:
-        fallback_pool = mapping_with_vals.dropna(subset=["market_value_m"]).drop_duplicates("player_lower")
-        pool_names = fallback_pool["player_lower"].tolist()
-        pool_df    = fallback_pool.set_index("player_lower")[["market_value_m", "contract_expiry"]]
+    # ── Hard patches for confirmed bad entries in fbref_tm_mapping.csv ────────
+    # These fbref_ids link to completely wrong TM player profiles in the mapping.
+    # Correct values sourced from Transfermarkt directly.
+    MV_PATCHES = {
+        "5ed97752": 45.0,   # Iliman Ndiaye (Everton) — mapped to Dialy Ndiaye (649032)
+        "c9817014": 30.0,   # Manuel Ugarte Ribeiro (Man Utd) — mapped to Edu Ribeiro (479640)
+    }
+    for fid, mv in MV_PATCHES.items():
+        mask = df["fbref_id"] == fid
+        if mask.any():
+            df.loc[mask, "market_value_m"] = mv
+            player = df.loc[mask, "player"].iloc[0]
+            print(f"  Patch: {player} ({fid}) -> EUR{mv}m")
 
-        def fuzzy_lookup(name):
-            result = process.extractOne(name, pool_names,
-                                        scorer=fuzz.token_sort_ratio, score_cutoff=85)
-            if result:
-                row = pool_df.loc[result[0]]
-                if isinstance(row, pd.DataFrame):
-                    row = row.iloc[0]
-                return row["market_value_m"], row["contract_expiry"]
-            return np.nan, np.nan
-
-        unmatched_names = df_merged.loc[unmatched_mask, "player_lower"]
-        results = unmatched_names.apply(
-            lambda n: pd.Series(fuzzy_lookup(n), index=["mv", "ce"])
-        )
-        df_merged.loc[unmatched_mask, "market_value_m"] = results["mv"].values
-        df_merged.loc[unmatched_mask, "contract_expiry"] = results["ce"].values
-
-        fuzzy_matched = df_merged["market_value_m"].notna().sum() - matched_primary
-        print(f"Market value fuzzy matched additional: {fuzzy_matched}")
-
-    total_matched = df_merged["market_value_m"].notna().sum()
-    pct = total_matched / len(df_merged) * 100
-    print(f"Market value total matched: {total_matched}/{len(df_merged)} ({pct:.1f}%)")
-
-    df_merged = df_merged.drop(columns=["player_lower"], errors="ignore")
-    return df_merged
+    return df
 
 
 # ── Extra-league loader ────────────────────────────────────────────────────────
