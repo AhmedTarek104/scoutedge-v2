@@ -1,6 +1,6 @@
 # ScoutEdge v2 — Al Ahly Recruitment Intelligence Platform
 
-A data-driven football recruitment platform built for Al Ahly SC, covering **3,090 players across 13 leagues** with market value intelligence, similarity search, and squad gap analysis.
+A data-driven football recruitment platform built for Al Ahly SC, covering **3,016 players across 13 leagues** with market value intelligence, similarity search, and squad gap analysis.
 
 **Live app:** [https://practical-hope-production-87ab.up.railway.app/](https://practical-hope-production-87ab.up.railway.app/)
 
@@ -23,7 +23,7 @@ Al Ahly targets players from feeder leagues (Super Lig, Eredivisie, Primeira Lig
 
 | Metric | Value |
 |---|---|
-| Players | 3,090 |
+| Players | 3,016 (deduplicated from 3,090 raw records) |
 | Leagues | 13 |
 | Seasons | 2024–25 |
 | Market value coverage | 90.3% (real + estimated) |
@@ -97,5 +97,5 @@ src/
 data/
   al_ahly_squad.csv     # Current Al Ahly squad (24/25)
   final/
-    players_final.csv   # 3,090 players, 69 features
+    players_final.csv   # 3,090 raw records → 3,016 after dedup, 69 features
 ```

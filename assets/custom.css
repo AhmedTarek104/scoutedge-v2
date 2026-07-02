@@ -1,0 +1,27 @@
+/* Position filter pill buttons — replaces dcc.Dropdown for t2-pos  */
+.pos-pills label {
+    display: inline-block;
+    margin: 2px 3px;
+    padding: 5px 11px;
+    border-radius: 14px;
+    border: 1px solid #444444;
+    cursor: pointer;
+    font-size: 12px;
+    font-family: 'Inter', system-ui, sans-serif;
+    color: #F5F5F5;
+    background: #222222;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+    user-select: none;
+}
+
+.pos-pills label:hover {
+    border-color: #CC0000;
+    color: #FF8888;
+}
+
+.pos-pills input[type="radio"]:checked + label {
+    background: #CC0000;
+    border-color: #CC0000;
+    color: #ffffff;
+    font-weight: 600;
+}

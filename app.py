@@ -25,6 +25,15 @@ DF["adjusted_scouting_score"] = pd.to_numeric(DF["adjusted_scouting_score"], err
 DF["raw_scouting_score"]   = pd.to_numeric(DF["raw_scouting_score"],   errors="coerce")
 DF["contract_expiring"]    = DF["contract_expiring"].astype(str).str.lower().isin(["true","1","yes"])
 
+# Deduplicate: where the same player appears at multiple clubs (mid-season transfer),
+# keep the record with the highest adjusted_scouting_score.
+_pre_dedup = len(DF)
+DF = (DF.sort_values("adjusted_scouting_score", ascending=False, na_position="last")
+       .drop_duplicates(subset="player", keep="first")
+       .reset_index(drop=True))
+if len(DF) < _pre_dedup:
+    print(f"  Removed {_pre_dedup - len(DF)} duplicate player records (mid-season transfers)")
+
 # Pre-compute estimated MV for players with null market_value_m
 # Median of valued peers grouped by (position, league, age_bucket)
 def _age_bucket(age):
@@ -577,7 +586,8 @@ SORT_OPTIONS = [
     {"label": "Age ↑",                    "value": "age"},
 ]
 
-def build_tab2():
+def build_tab2(filter_state=None):
+    fs = filter_state or {}
     return html.Div([
         dbc.Row([
             # Sidebar
@@ -589,14 +599,17 @@ def build_tab2():
 
                 html.Label(["Position ", html.Span("*", style={"color": RED})],
                            style={"color": TEXT_MUTED, "fontSize": "11px",
-                                  "fontWeight": "700", "fontFamily": FONT}),
-                dcc.Dropdown(id="t2-pos",
-                             options=[{"label": p, "value": p}
-                                      for p in ["CB","FB","DM","CM","AM","W","ST"]],
-                             placeholder="Select position…",
-                             clearable=False,
-                             style={"marginBottom": "14px",
-                                    "fontFamily": FONT, "fontSize": "13px"}),
+                                  "fontWeight": "700", "fontFamily": FONT,
+                                  "marginBottom": "6px", "display": "block"}),
+                dcc.RadioItems(
+                    id="t2-pos",
+                    options=[{"label": p, "value": p}
+                             for p in ["CB","FB","DM","CM","AM","W","ST"]],
+                    value=fs.get("pos"),
+                    inputStyle={"display": "none"},
+                    className="pos-pills",
+                    style={"marginBottom": "14px"},
+                ),
 
                 # ── League selector — two groups ─────────────────────────
                 html.Div([
@@ -623,7 +636,7 @@ def build_tab2():
                         {"label": f" {l} ({_LEAGUE_COUNTS.get(l, 0)})", "value": l}
                         for l in TARGET_LEAGUE_ORDER
                     ],
-                    value=list(TARGET_LEAGUE_ORDER),
+                    value=fs.get("leagues_target", list(TARGET_LEAGUE_ORDER)),
                     inputStyle={"marginRight": "5px"},
                     labelStyle={"display": "block", "marginBottom": "3px",
                                 "fontSize": "11px", "color": TEXT, "fontFamily": FONT},
@@ -638,7 +651,7 @@ def build_tab2():
                         {"label": f" {l} ({_LEAGUE_COUNTS.get(l, 0)})", "value": l}
                         for l in BIG5_LEAGUE_ORDER
                     ],
-                    value=[],
+                    value=fs.get("leagues_big5", []),
                     inputStyle={"marginRight": "5px"},
                     labelStyle={"display": "block", "marginBottom": "3px",
                                 "fontSize": "11px", "color": TEXT_MUTED, "fontFamily": FONT},
@@ -654,21 +667,21 @@ def build_tab2():
 
                 html.Div(id="t2-age-lbl",
                          style={"color": AMBER, "fontSize": "11px", "fontFamily": FONT}),
-                dcc.Slider(id="t2-age", min=16, max=35, value=28, step=1,
+                dcc.Slider(id="t2-age", min=16, max=35, value=fs.get("age", 28), step=1,
                            marks={16:"16", 20:"20", 25:"25", 28:"28", 35:"35"},
                            tooltip={"placement":"bottom"}),
 
                 html.Div(id="t2-mv-lbl",
                          style={"color": AMBER, "fontSize": "11px",
                                 "fontFamily": FONT, "marginTop": "4px"}),
-                dcc.Slider(id="t2-mv", min=0, max=15, value=3, step=0.5,
+                dcc.Slider(id="t2-mv", min=0, max=15, value=fs.get("mv", 3), step=0.5,
                            marks={0:"€0", 5:"€5m", 10:"€10m", 15:"€15m"},
                            tooltip={"placement":"bottom"}),
 
                 html.Div(id="t2-mins-lbl",
                          style={"color": AMBER, "fontSize": "11px",
                                 "fontFamily": FONT, "marginTop": "4px"}),
-                dcc.Slider(id="t2-mins", min=900, max=3000, value=900, step=100,
+                dcc.Slider(id="t2-mins", min=900, max=3000, value=fs.get("mins", 900), step=100,
                            marks={900:"900", 1800:"1800", 3000:"3000"},
                            tooltip={"placement":"bottom"}),
 
@@ -680,7 +693,7 @@ def build_tab2():
                 dcc.RadioItems(id="t2-contract",
                                options=[{"label": " All players",        "value": "all"},
                                         {"label": " Expiring ⚡ only",   "value": "expiring"}],
-                               value="all",
+                               value=fs.get("contract", "all"),
                                inputStyle={"marginRight": "5px"},
                                labelStyle={"display": "block", "marginBottom": "3px",
                                            "fontSize": "12px", "color": TEXT, "fontFamily": FONT}),
@@ -696,17 +709,20 @@ def build_tab2():
                                    {"label": " Valued only",      "value": "valued"},
                                    {"label": " Estimated only",   "value": "estimated"},
                                ],
-                               value="all",
+                               value=fs.get("mv_source", "all"),
                                inputStyle={"marginRight": "5px"},
                                labelStyle={"display": "block", "marginBottom": "3px",
                                            "fontSize": "12px", "color": TEXT, "fontFamily": FONT}),
+                html.Div("★ = actual Transfermarkt value  ·  ~ est. = peer-group median estimate",
+                         style={"color": TEXT_MUTED, "fontSize": "9px", "fontFamily": FONT,
+                                "marginTop": "3px", "fontStyle": "italic"}),
 
                 html.Hr(style={"borderColor": BORDER, "margin": "12px 0"}),
                 html.Label("Sort By",
                            style={"color": TEXT_MUTED, "fontSize": "11px",
                                   "fontWeight": "700", "fontFamily": FONT}),
                 dcc.Dropdown(id="t2-sort", options=SORT_OPTIONS,
-                             value="adjusted_scouting_score", clearable=False,
+                             value=fs.get("sort", "adjusted_scouting_score"), clearable=False,
                              style={"marginBottom": "12px", "fontFamily": FONT, "fontSize": "12px"}),
 
                 html.Hr(style={"borderColor": BORDER, "margin": "12px 0"}),
@@ -720,7 +736,7 @@ def build_tab2():
                     # Defensively Strong — CB, FB, DM, CM only
                     html.Div(id="t2-filter-def-wrap", style={"display": "none"}, children=[
                         dbc.Switch(id="t2-filter-def", label="⚔ Defensively Strong",
-                                   value=False,
+                                   value=fs.get("filter_def", False),
                                    style={"fontSize": "12px", "color": TEXT,
                                           "fontFamily": FONT, "marginBottom": "6px"}),
                         html.Div("tackle_success_rate ≥55th AND interceptions ≥50th",
@@ -731,7 +747,7 @@ def build_tab2():
                     # Goal Threat — ST, W, AM, CM only
                     html.Div(id="t2-filter-goal-wrap", style={"display": "none"}, children=[
                         dbc.Switch(id="t2-filter-goal", label="🎯 Goal Threat",
-                                   value=False,
+                                   value=fs.get("filter_goal", False),
                                    style={"fontSize": "12px", "color": TEXT,
                                           "fontFamily": FONT, "marginBottom": "6px"}),
                         html.Div("goals/90 ≥55th OR xG/90 ≥55th",
@@ -741,7 +757,7 @@ def build_tab2():
                     ]),
                     # Progressive — all positions
                     dbc.Switch(id="t2-filter-prog", label="🔄 Progressive / Creative",
-                               value=False,
+                               value=fs.get("filter_prog", False),
                                style={"fontSize": "12px", "color": TEXT,
                                       "fontFamily": FONT, "marginBottom": "6px"}),
                     html.Div("prog carries ≥55th OR key passes ≥55th OR prog passes ≥55th",
@@ -870,6 +886,12 @@ def build_tab5():
                     dcc.Dropdown(id="t5-player", options=all_opts,
                                  placeholder="Search any player…",
                                  optionHeight=45, style={"fontFamily": FONT}),
+                    html.P(
+                        f"Searches the 13-league scouting database ({len(DF):,} players). "
+                        "Al Ahly squad not included — use Squad Intelligence to scout current squad players.",
+                        style={"color": TEXT_MUTED, "fontSize": "10px", "fontFamily": FONT,
+                               "marginTop": "5px", "marginBottom": "0", "fontStyle": "italic"},
+                    ),
                     html.Div(id="t5-mini", style={"marginTop": "10px"}),
                 ], style={**CARD, "marginBottom": "12px"}),
 
@@ -1090,9 +1112,10 @@ TAB_SELECTED = {
 }
 
 app.layout = html.Div([
-    dcc.Store(id="shortlist-store",  storage_type="session", data=[]),
-    dcc.Store(id="selected-player",  data=None),
-    dcc.Store(id="nav-pos-store",    data=None),
+    dcc.Store(id="shortlist-store",   storage_type="session", data=[]),
+    dcc.Store(id="selected-player",   data=None),
+    dcc.Store(id="nav-pos-store",     data=None),
+    dcc.Store(id="t2-filter-store",   storage_type="session", data=None),
 
     # Header
     html.Div([
@@ -1430,17 +1453,22 @@ def _profile_content(player_name, shortlist):
         sim_data = []
         for _, sr in sim_df.iterrows():
             smv = sr.get("market_value_m")
+            _full = DF[DF["player"] == sr["player"]]
+            r_avail, r_total = (stat_coverage(_full.iloc[0], str(sr.get("position_group", pos)))
+                                if not _full.empty else (0, len(RADAR_METRICS.get(pos, []))))
             sim_data.append({
                 "★": "☆", "Player": sr["player"], "Club": sr.get("team", ""),
                 "League": sr.get("league_clean", ""),
                 "Age":    int(sr["age"]) if pd.notna(sr["age"]) else "–",
                 "MV (€m)": f"€{smv:.2f}m" if pd.notna(smv) else "–",
-                "Sim%":   f"{sr['similarity_pct']:.0f}%",
+                "Sim%":   f"{sr['similarity_pct']:.0f}% ({r_avail}/{r_total})",
                 "Score":  round(float(sr["adjusted_scouting_score"]), 1) if pd.notna(sr.get("adjusted_scouting_score")) else "–",
+                "_avail": r_avail,
             })
         sim_section = dash_table.DataTable(
             data=sim_data,
-            columns=[{"name": c, "id": c} for c in ["★", "Player", "Club", "League", "Age", "MV (€m)", "Sim%", "Score"]],
+            columns=[{"name": c, "id": c} for c in ["★", "Player", "Club", "League", "Age", "MV (€m)", "Sim%", "Score", "_avail"]],
+            hidden_columns=["_avail"],
             style_header=TBL_HEADER,
             style_cell={**TBL_CELL, "fontSize": "12px", "textAlign": "left"},
             style_cell_conditional=[
@@ -1448,13 +1476,16 @@ def _profile_content(player_name, shortlist):
                  "color": AMBER, "cursor": "pointer"},
                 {"if": {"column_id": "Sim%"}, "textAlign": "center", "fontWeight": "700"},
             ],
-            style_data_conditional=[{"if": {"row_index": "odd"}, "background": BG_CARD2}],
+            style_data_conditional=[
+                {"if": {"row_index": "odd"}, "background": BG_CARD2},
+                {"if": {"filter_query": "{_avail} < 4", "column_id": "Sim%"},
+                 "color": TEXT_MUTED, "fontStyle": "italic", "fontWeight": "400"},
+            ],
         )
 
-    # CHANGE 3: context note about similarity precision
     sim_note = html.P(
-        f"Similarity based on {avail} available stat{'s' if avail != 1 else ''}. "
-        f"More stats = more precise matching.",
+        f"Similarity based on {avail} available stat{'s' if avail != 1 else ''} · "
+        f"Sim% shows (stats used / position total) · grey = fewer than 4 stats, treat with caution.",
         style={"color": TEXT_MUTED, "fontSize": "11px", "fontStyle": "italic",
                "fontFamily": FONT, "marginTop": "8px", "marginBottom": "0"},
     )
@@ -1518,17 +1549,22 @@ def refresh_sim_players(toggle_val, player_name):
                 mv_col = f"~€{smv_est:.1f}m est."
             else:
                 mv_col = "–"
+            _full = DF[DF["player"] == sr["player"]]
+            r_avail, r_total = (stat_coverage(_full.iloc[0], str(sr.get("position_group", pos)))
+                                if not _full.empty else (0, len(RADAR_METRICS.get(pos, []))))
             sim_data.append({
                 "★": "☆", "Player": sr["player"], "Club": sr.get("team", ""),
                 "League": sr.get("league_clean", ""),
                 "Age":    int(sr["age"]) if pd.notna(sr["age"]) else "–",
                 "MV (€m)": mv_col,
-                "Sim%":   f"{sr['similarity_pct']:.0f}%",
+                "Sim%":   f"{sr['similarity_pct']:.0f}% ({r_avail}/{r_total})",
                 "Score":  round(float(sr["adjusted_scouting_score"]), 1) if pd.notna(sr.get("adjusted_scouting_score")) else "–",
+                "_avail": r_avail,
             })
         sim_section = dash_table.DataTable(
             data=sim_data,
-            columns=[{"name": c, "id": c} for c in ["★", "Player", "Club", "League", "Age", "MV (€m)", "Sim%", "Score"]],
+            columns=[{"name": c, "id": c} for c in ["★", "Player", "Club", "League", "Age", "MV (€m)", "Sim%", "Score", "_avail"]],
+            hidden_columns=["_avail"],
             style_header=TBL_HEADER,
             style_cell={**TBL_CELL, "fontSize": "12px", "textAlign": "left"},
             style_cell_conditional=[
@@ -1540,6 +1576,8 @@ def refresh_sim_players(toggle_val, player_name):
                 {"if": {"row_index": "odd"}, "background": BG_CARD2},
                 {"if": {"filter_query": '{MV (€m)} contains "~"', "column_id": "MV (€m)"},
                  "color": TEXT_MUTED, "fontStyle": "italic"},
+                {"if": {"filter_query": "{_avail} < 4", "column_id": "Sim%"},
+                 "color": TEXT_MUTED, "fontStyle": "italic", "fontWeight": "400"},
             ],
             tooltip_data=[
                 {"MV (€m)": {"value": "Estimated — no Transfermarkt data", "type": "markdown"}}
@@ -1550,10 +1588,10 @@ def refresh_sim_players(toggle_val, player_name):
             tooltip_duration=None,
         )
 
-    avail, _ = stat_coverage(player_row.iloc[0] if not player_row.empty else pd.Series(), pos)
+    avail, total = stat_coverage(player_row.iloc[0] if not player_row.empty else pd.Series(), pos)
     sim_note = html.P(
-        f"Similarity based on {avail} available stat{'s' if avail != 1 else ''}. "
-        f"More stats = more precise matching.",
+        f"Similarity based on {avail}/{total} available stats · "
+        f"Sim% shows (stats used / position total) · grey = fewer than 4 stats, treat with caution.",
         style={"color": TEXT_MUTED, "fontSize": "11px", "fontStyle": "italic",
                "fontFamily": FONT, "marginTop": "8px", "marginBottom": "0"},
     )
@@ -1563,14 +1601,15 @@ def refresh_sim_players(toggle_val, player_name):
 @app.callback(
     Output("tab-content", "children"),
     Input("main-tabs", "value"),
-    [State("selected-player", "data"),
-     State("shortlist-store",  "data")],
+    [State("selected-player",  "data"),
+     State("shortlist-store",  "data"),
+     State("t2-filter-store",  "data")],
 )
-def render_tab(tab, player_name, shortlist):
+def render_tab(tab, player_name, shortlist, t2_filter_state):
     if tab == "tab-squad":
         return build_tab1()
     if tab == "tab-discovery":
-        return build_tab2()
+        return build_tab2(t2_filter_state)
     if tab == "tab-profile":
         # Render profile inline so t3-body content arrives with the tab switch,
         # eliminating the race condition vs the render_profile callback.
@@ -1671,6 +1710,35 @@ def update_filter_visibility(pos):
 )
 def set_nav_position(pos):
     return pos or no_update
+
+# Tab 2 — persist filter state so it survives tab switches
+@app.callback(
+    Output("t2-filter-store", "data"),
+    Input("t2-apply", "n_clicks"),
+    [State("t2-pos",            "value"),
+     State("t2-leagues-target", "value"),
+     State("t2-leagues-big5",   "value"),
+     State("t2-age",            "value"),
+     State("t2-mv",             "value"),
+     State("t2-mins",           "value"),
+     State("t2-contract",       "value"),
+     State("t2-mv-source",      "value"),
+     State("t2-sort",           "value"),
+     State("t2-filter-def",     "value"),
+     State("t2-filter-goal",    "value"),
+     State("t2-filter-prog",    "value")],
+    prevent_initial_call=True,
+)
+def save_t2_filter_state(n, pos, leagues_target, leagues_big5, age, mv, mins,
+                          contract, mv_source, sort, filter_def, filter_goal, filter_prog):
+    if not n:
+        return no_update
+    return {
+        "pos": pos, "leagues_target": leagues_target or [], "leagues_big5": leagues_big5 or [],
+        "age": age, "mv": mv, "mins": mins, "contract": contract, "mv_source": mv_source,
+        "sort": sort, "filter_def": bool(filter_def), "filter_goal": bool(filter_goal),
+        "filter_prog": bool(filter_prog),
+    }
 
 # Tab 2 — apply filters + update results table
 @app.callback(
@@ -2279,6 +2347,9 @@ def find_replacements(n, player_name, budget, max_age, diff_league, tgt_only):
         else:
             mv_col = "–"
         sim_pct = float(sr.get("similarity_pct", 0))
+        _full = DF[DF["player"] == sr["player"]]
+        r_avail, r_total = (stat_coverage(_full.iloc[0], ref_pos)
+                            if not _full.empty else (0, len(RADAR_METRICS.get(ref_pos, []))))
         rows.append({
             "★":       "☆",
             "Player":  sr["player"],
@@ -2286,15 +2357,17 @@ def find_replacements(n, player_name, budget, max_age, diff_league, tgt_only):
             "League":  sr.get("league_clean", ""),
             "Age":     int(sr["age"]) if pd.notna(sr["age"]) else "–",
             "MV (€m)": mv_col,
-            "Sim%":    f"{sim_pct:.0f}%",
+            "Sim%":    f"{sim_pct:.0f}% ({r_avail}/{r_total})",
             "Score":   round(float(sr.get("adjusted_scouting_score", 0)), 1),
             "Exp":     "⚡" if sr.get("contract_expiring") else "",
+            "_avail":  r_avail,
         })
 
     tbl = dash_table.DataTable(
         data=rows,
         columns=[{"name": c, "id": c} for c in
-                 ["★", "Player", "Club", "League", "Age", "MV (€m)", "Sim%", "Score", "Exp"]],
+                 ["★", "Player", "Club", "League", "Age", "MV (€m)", "Sim%", "Score", "Exp", "_avail"]],
+        hidden_columns=["_avail"],
         style_header=TBL_HEADER,
         style_cell={**TBL_CELL, "textAlign": "left", "fontSize": "12px"},
         style_cell_conditional=[
@@ -2302,13 +2375,14 @@ def find_replacements(n, player_name, budget, max_age, diff_league, tgt_only):
              "color": AMBER},
             {"if": {"column_id": "Exp"}, "width": "28px", "textAlign": "center",
              "color": AMBER},
+            {"if": {"column_id": "Sim%"}, "textAlign": "center", "fontWeight": "700"},
         ],
         style_data_conditional=[
             {"if": {"row_index": "odd"}, "background": BG_CARD2},
-            {"if": {"filter_query": '{Sim%} contains "8" && {Sim%} != "–"'},
-             "background": GREEN + "11"},
             {"if": {"filter_query": '{MV (€m)} contains "~"', "column_id": "MV (€m)"},
              "color": TEXT_MUTED, "fontStyle": "italic"},
+            {"if": {"filter_query": "{_avail} < 4", "column_id": "Sim%"},
+             "color": TEXT_MUTED, "fontStyle": "italic", "fontWeight": "400"},
         ],
         tooltip_data=[
             {"MV (€m)": {"value": "Estimated — no Transfermarkt data", "type": "markdown"}}
@@ -2319,12 +2393,16 @@ def find_replacements(n, player_name, budget, max_age, diff_league, tgt_only):
         tooltip_duration=None,
     )
 
+    ref_avail, ref_total = stat_coverage(ref, ref_pos)
     return html.Div([
         html.H6(f"Replacements for {player_name}",
                 style={**H, "fontSize": "14px", "marginBottom": "4px"}),
         html.Div(f"Same position ({ref_pos})  ·  Budget ≤€{budget}m  ·  Age ≤{max_age}  ·  {len(rows)} found",
                  style={"color": TEXT_MUTED, "fontSize": "12px",
-                        "marginBottom": "12px", "fontFamily": FONT}),
+                        "marginBottom": "8px", "fontFamily": FONT}),
+        html.P(f"Sim% shows (stats used / position total) · grey = fewer than 4 stats, treat with caution.",
+               style={"color": TEXT_MUTED, "fontSize": "10px", "fontFamily": FONT,
+                      "fontStyle": "italic", "marginBottom": "10px"}),
         tbl,
     ])
 
