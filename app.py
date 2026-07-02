@@ -1575,12 +1575,13 @@ def refresh_sim_players(toggle_val, player_name):
             style_data_conditional=[
                 {"if": {"row_index": "odd"}, "background": BG_CARD2},
                 {"if": {"filter_query": '{MV (€m)} contains "~"', "column_id": "MV (€m)"},
-                 "color": TEXT_MUTED, "fontStyle": "italic"},
+                 "color": AMBER, "fontStyle": "italic"},
                 {"if": {"filter_query": "{_avail} < 4", "column_id": "Sim%"},
                  "color": TEXT_MUTED, "fontStyle": "italic", "fontWeight": "400"},
             ],
             tooltip_data=[
-                {"MV (€m)": {"value": "Estimated — no Transfermarkt data", "type": "markdown"}}
+                {"MV (€m)": {"value": "⚠ Estimated value (peer-group median) — no Transfermarkt data. "
+                                       "Real transfer cost may differ.", "type": "markdown"}}
                 if "~" in (row.get("MV (€m)", "") or "") else {}
                 for row in sim_data
             ],
@@ -1889,7 +1890,7 @@ def update_discovery(apply_n, reset_n, pos, leagues, max_age, max_mv, min_mins,
             "MV (€m)": mv_str,
             "Raw":     round(float(r["raw_scouting_score"]), 1) if pd.notna(r["raw_scouting_score"]) else "–",
             "Score":   round(float(r["adjusted_scouting_score"]), 1) if pd.notna(r["adjusted_scouting_score"]) else "–",
-            "Data":    coverage_dots(r_avail, _total_stats),
+            "Data":    "Full" if r_avail >= _total_stats else "Basic",
             "Exp":     contract_ico,
         })
 
@@ -1923,8 +1924,8 @@ def update_discovery(apply_n, reset_n, pos, leagues, max_age, max_mv, min_mins,
             {"if": {"column_id": "Pos"},  "width": "40px", "textAlign": "center"},
             {"if": {"column_id": "Raw"},  "width": "55px", "textAlign": "center"},
             {"if": {"column_id": "Score"},"width": "55px", "textAlign": "center"},
-            {"if": {"column_id": "Data"}, "width": "75px", "textAlign": "center",
-             "fontSize": "10px", "letterSpacing": "1px", "color": TEXT_MUTED},
+            {"if": {"column_id": "Data"}, "width": "55px", "textAlign": "center",
+             "fontWeight": "600", "fontSize": "11px"},
             {"if": {"column_id": "Exp"},  "width": "30px", "textAlign": "center",
              "color": AMBER},
         ],
@@ -1932,10 +1933,13 @@ def update_discovery(apply_n, reset_n, pos, leagues, max_age, max_mv, min_mins,
             {"if": {"row_index": "odd"}, "background": BG_CARD2},
             {"if": {"filter_query": '{★} = "★"'}, "color": AMBER},
             {"if": {"filter_query": '{MV (€m)} contains "~"', "column_id": "MV (€m)"},
-             "color": TEXT_MUTED, "fontStyle": "italic"},
+             "color": AMBER, "fontStyle": "italic"},
+            {"if": {"filter_query": '{Data} = "Full"',  "column_id": "Data"}, "color": GREEN},
+            {"if": {"filter_query": '{Data} = "Basic"', "column_id": "Data"}, "color": TEXT_MUTED},
         ],
         tooltip_data=[
-            {"MV (€m)": {"value": "Estimated — no Transfermarkt data", "type": "markdown"}}
+            {"MV (€m)": {"value": "⚠ Estimated value (peer-group median) — no Transfermarkt data. "
+                                   "Real transfer cost may differ.", "type": "markdown"}}
             if "~" in (row.get("MV (€m)", "") or "") else {}
             for row in table_data
         ],
@@ -2380,12 +2384,13 @@ def find_replacements(n, player_name, budget, max_age, diff_league, tgt_only):
         style_data_conditional=[
             {"if": {"row_index": "odd"}, "background": BG_CARD2},
             {"if": {"filter_query": '{MV (€m)} contains "~"', "column_id": "MV (€m)"},
-             "color": TEXT_MUTED, "fontStyle": "italic"},
+             "color": AMBER, "fontStyle": "italic"},
             {"if": {"filter_query": "{_avail} < 4", "column_id": "Sim%"},
              "color": TEXT_MUTED, "fontStyle": "italic", "fontWeight": "400"},
         ],
         tooltip_data=[
-            {"MV (€m)": {"value": "Estimated — no Transfermarkt data", "type": "markdown"}}
+            {"MV (€m)": {"value": "⚠ Estimated value (peer-group median) — no Transfermarkt data. "
+                                   "Real transfer cost may differ.", "type": "markdown"}}
             if "~" in (row.get("MV (€m)", "") or "") else {}
             for row in rows
         ],
